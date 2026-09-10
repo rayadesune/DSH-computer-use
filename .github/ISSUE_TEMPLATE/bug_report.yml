@@ -1,0 +1,47 @@
+name: Bug report
+description: 报告 dsh-ui 的行为异常
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先跑一下 `dsh-ui guard` 和 `dsh-ui displays`——它们能解释大部分"点不中"的问题。
+        如果目标是 iPhone 镜像窗口，请先看 `skill/SKILL.md` 的 iPhone Mirroring 一节。
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 期望发生什么、实际发生什么（有截图/录屏更好）
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现命令
+      description: 完整命令行；能用 `--dry` 复现的最好。注明目标 App 与窗口
+      render: shell
+      placeholder: |
+        dsh-ui shot -R 0,0,600,360 --grid 50 --zoom 2
+        dsh-ui find-text "保存" --click
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: 环境
+      description: macOS 版本 / Swift 版本 / 辅助功能与屏幕录制是否已授权给宿主程序
+      placeholder: "macOS 14.5 · Swift 5.10 · 辅助功能 ✓ · 屏幕录制 ✓"
+    validations:
+      required: true
+
+  - type: textarea
+    id: diag
+    attributes:
+      label: 诊断输出
+      description: 请粘贴 `dsh-ui guard`、`dsh-ui displays`，必要时加 `dsh-ui under X Y`
+      render: shell
+    validations:
+      required: false
