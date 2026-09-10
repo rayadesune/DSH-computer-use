@@ -123,10 +123,135 @@ func typeString(_ s: String) {
     }
 }
 
-func printCursor() {
+/// 系统光标位置（全局左上原点）。
+/// 事件经 CGHIDEventTap 投递到 WindowServer 是异步的：刚 post 完立刻读会拿到**旧位置**，
+/// 所以调用方读之前必须让出一点时间，否则 move/click/drag 会打印上一次的坐标。
+func currentGlobalCursor() -> CGPoint {
     let m = NSEvent.mouseLocation
     let mainH = NSScreen.screens.first!.frame.height
-    print("ok cursor=(\(Int(m.x)),\(Int(mainH - m.y))) top-left-coords")
+    return CGPoint(x: m.x, y: mainH - m.y)
+}
+
+/// 逐字符发送**真实键码**（含大写/符号的 shift 处理）。
+///
+/// 为什么需要它：type 走的是「virtualKey 恒为 0 + unicode 字符串」注入。
+/// macOS 原生控件认 unicode 载荷，所以本机可用；但像 iPhone 镜像这类
+/// 只按 HID 键码查当前布局的目标，会把所有 ASCII 退化成键码 0 对应的 'a'
+/// （实测 "shortcut" -> "aaaaaaaa"），而非 ASCII 才回退到 unicode 载荷——
+/// 这就是「中文正常、英文全变 a」的成因。keys 用真实键码绕开这个坑。
+struct KeyStroke { let code: CGKeyCode; let shift: Bool }
+
+let shiftPairs: [Character: String] = [
+    "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6", "&": "7", "*": "8",
+    "(": "9", ")": "0", "_": "-", "+": "=", "{": "[", "}": "]", "|": "\\",
+    ":": ";", "\"": "'", "<": ",", ">": ".", "?": "/", "~": "`",
+]
+
+func strokeFor(_ ch: Character) -> KeyStroke? {
+    switch ch {
+    case " ":  return KeyStroke(code: keyMap["space"]!, shift: false)
+    case "\n": return KeyStroke(code: keyMap["return"]!, shift: false)
+    case "\t": return KeyStroke(code: keyMap["tab"]!, shift: false)
+    default: break
+    }
+    if let base = shiftPairs[ch], let code = keyMap[base] { return KeyStroke(code: code, shift: true) }
+    if ch.isUppercase, let code = keyMap[String(ch).lowercased()] { return KeyStroke(code: code, shift: true) }
+    if let code = keyMap[String(ch)] { return KeyStroke(code: code, shift: false) }
+    return nil
+}
+
+@discardableResult
+func typeKeys(_ s: String) -> (sent: Int, skipped: [Character]) {
+    var sent = 0
+    var skipped: [Character] = []
+    let shiftCode: CGKeyCode = 56          // kVK_Shift
+    for ch in s {
+        guard let st = strokeFor(ch) else { skipped.append(ch); continue }
+        if st.shift { keyEvent(shiftCode, true, [.maskShift]); usleep(4_000) }
+        keyEvent(st.code, true, st.shift ? [.maskShift] : [])
+        usleep(8_000)
+        keyEvent(st.code, false, st.shift ? [.maskShift] : [])
+        if st.shift { usleep(4_000); keyEvent(shiftCode, false, []) }
+        usleep(12_000)
+        sent += 1
+    }
+    return (sent, skipped)
+}
+
+func printCursor(settleUS: UInt32 = 25_000) {
+    if settleUS > 0 { usleep(settleUS) }
+    let g = currentGlobalCursor()
+    print("ok cursor=(\(Int(g.x)),\(Int(g.y))) top-left-coords")
+}
+
+// MARK: - 窗口几何辅助（拖拽护栏）
+
+/// 找出「盖住该点」的最小窗口（AX 窗口坐标与 dsh-ui 同为全局左上原点）。
+/// 用于拖拽前的边缘护栏：起手点贴近窗口边缘时，macOS 会把拖拽当成窗口缩放/移动。
+func windowUnder(_ p: CGPoint) -> (app: String, rect: CGRect)? {
+    var best: (String, CGRect)? = nil
+    for a in NSWorkspace.shared.runningApplications
+    where a.activationPolicy == .regular && !a.isTerminated {
+        for w in axWindows(a) {
+            guard let wp = axPoint(w, kAXPositionAttribute),
+                  let ws = axSize(w, kAXSizeAttribute),
+                  ws.width > 1, ws.height > 1 else { continue }
+            let r = CGRect(origin: wp, size: ws)
+            guard r.contains(p) else { continue }
+            if best == nil || r.width * r.height < best!.1.width * best!.1.height {
+                best = (a.localizedName ?? "?", r)
+            }
+        }
+    }
+    guard let b = best else { return nil }
+    return (b.0, b.1)
+}
+
+/// 起手点距所属窗口边缘过近时返回警告文本（nil = 安全）。
+func edgeWarning(_ p: CGPoint, margin: CGFloat) -> String? {
+    guard margin > 0, let w = windowUnder(p) else { return nil }
+    let d = min(min(p.x - w.rect.minX, w.rect.maxX - p.x),
+                min(p.y - w.rect.minY, w.rect.maxY - p.y))
+    guard d < margin else { return nil }
+    return "起手点距窗口「\(w.app)」边缘仅 \(Int(d))pt（阈值 \(Int(margin))pt）："
+        + "该拖拽可能被 macOS 当成窗口缩放而非内容拖拽；建议起点内移，或显式加 --edge-guard 0"
+}
+
+/// 统一的「按下-保持-抬起」，是 click / tap / press 的共用实现。
+func tapAt(_ p: CGPoint, holdMS: Int) {
+    post(.mouseMoved, p)
+    usleep(30_000)
+    post(.leftMouseDown, p)
+    usleep(UInt32(max(1, holdMS)) * 1000)
+    post(.leftMouseUp, p)
+}
+
+/// 通用拖拽：起手停顿 + 分段移动 + 可选惯性尾巴。
+func dragGesture(from s: CGPoint, to e: CGPoint,
+                 settleMS: Int, holdMS: Int, moveMS: Int, steps: Int,
+                 momentum: Double = 0) {
+    let n = max(1, steps)
+    post(.mouseMoved, s)
+    usleep(UInt32(max(0, settleMS)) * 1000)
+    post(.leftMouseDown, s)
+    usleep(UInt32(max(0, holdMS)) * 1000)
+    let per = UInt32(max(2, moveMS / n)) * 1000
+    for i in 1...n {
+        let t = Double(i) / Double(n)
+        post(.leftMouseDragged, CGPoint(x: s.x + (e.x - s.x) * t, y: s.y + (e.y - s.y) * t))
+        usleep(per)
+    }
+    post(.leftMouseUp, e)
+    // 惯性：抬手后继续投递若干次同向拖拽事件（部分滚动视图只认这个才真正滚动）
+    if momentum > 0 {
+        let dx = e.x - s.x, dy = e.y - s.y
+        for k in 1...6 {
+            let f = 1.0 + momentum * Double(k) / 6.0
+            post(.leftMouseDragged, CGPoint(x: e.x + dx * Double(k) * 0.06 * f,
+                                            y: e.y + dy * Double(k) * 0.06 * f))
+            usleep(12_000)
+        }
+    }
 }
 
 // MARK: - 显示器几何
@@ -208,6 +333,97 @@ func rgbaBuffer(_ path: String) -> (w: Int, h: Int, buf: [UInt8])? {
                               bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
     ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
     return (w, h, buf)
+}
+
+// MARK: - 图像派生（网格标尺 / 放大）
+
+/// 在扩展名前插入后缀：a/b.png + "-grid" -> a/b-grid.png
+func derivedPath(_ path: String, _ suffix: String) -> String {
+    let ns = path as NSString
+    let ext = ns.pathExtension
+    let base = ns.deletingPathExtension
+    return ext.isEmpty ? base + suffix : base + suffix + "." + ext
+}
+
+@discardableResult
+func writePNG(_ img: CGImage, to path: String) -> Bool {
+    guard let dest = CGImageDestinationCreateWithURL(
+        URL(fileURLWithPath: path) as CFURL, "public.png" as CFString, 1, nil) else { return false }
+    CGImageDestinationAddImage(dest, img, nil)
+    return CGImageDestinationFinalize(dest)
+}
+
+func loadCG(_ path: String) -> CGImage? {
+    guard let img = NSImage(contentsOfFile: path) else { return nil }
+    return img.cgImage(forProposedRect: nil, context: nil, hints: nil)
+}
+
+/// 放大倍数（interpolation=none）——只为了让 agent 逐个像素量取小图标，不做美化。
+func zoomImage(path: String, factor: CGFloat, out: String) -> Bool {
+    guard factor > 1, let cg = loadCG(path) else { return false }
+    let w = Int(CGFloat(cg.width) * factor), h = Int(CGFloat(cg.height) * factor)
+    guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                              bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+    ctx.interpolationQuality = .none
+    ctx.draw(cg, in: CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h)))
+    guard let img = ctx.makeImage() else { return false }
+    return writePNG(img, to: out)
+}
+
+/// 在截图上叠加**带全局坐标数字**的标尺网格，消除「从缩放预览目测坐标」这类错误。
+func drawGrid(path: String, origin: CGPoint, scale: CGFloat, step: CGFloat, out: String) -> Bool {
+    guard step > 0, let cg = loadCG(path) else { return false }
+    let w = cg.width, h = cg.height
+    guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                              bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+    ctx.draw(cg, in: CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h)))
+
+    let pxStep = step * scale
+    guard pxStep >= 6 else { print("  警告: 网格步长过小（\(Int(pxStep))px），已跳过"); return false }
+
+    func label(_ text: String, _ x: CGFloat, _ y: CGFloat) {
+        let ns = NSGraphicsContext(cgContext: ctx, flipped: false)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = ns
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .bold),
+            .foregroundColor: NSColor.white,
+            .backgroundColor: NSColor(calibratedRed: 0, green: 0, blue: 0, alpha: 0.65),
+        ]
+        NSString(string: text).draw(at: NSPoint(x: x, y: y), withAttributes: attrs)
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    // 竖线：标注全局 x
+    var px: CGFloat = 0
+    var k = 0
+    while px <= CGFloat(w) {
+        let gx = Int((origin.x + px / scale).rounded())
+        ctx.setStrokeColor(CGColor(red: 1, green: 0.15, blue: 0.15, alpha: k % 5 == 0 ? 0.95 : 0.5))
+        ctx.setLineWidth(k % 5 == 0 ? 1.5 : 1)
+        ctx.move(to: CGPoint(x: px + 0.5, y: 0))
+        ctx.addLine(to: CGPoint(x: px + 0.5, y: CGFloat(h)))
+        ctx.strokePath()
+        label("\(gx)", px + 3, CGFloat(h) - 13)
+        px += pxStep; k += 1
+    }
+    // 横线：标注全局 y
+    var py: CGFloat = 0
+    k = 0
+    while py <= CGFloat(h) {
+        let gy = Int((origin.y + py / scale).rounded())
+        ctx.setStrokeColor(CGColor(red: 0.15, green: 0.55, blue: 1, alpha: k % 5 == 0 ? 0.95 : 0.5))
+        ctx.setLineWidth(k % 5 == 0 ? 1.5 : 1)
+        ctx.move(to: CGPoint(x: 0, y: py + 0.5))
+        ctx.addLine(to: CGPoint(x: CGFloat(w), y: py + 0.5))
+        ctx.strokePath()
+        label("\(gy)", 3, CGFloat(h) - py - 12)
+        py += pxStep; k += 1
+    }
+    guard let img = ctx.makeImage() else { return false }
+    return writePNG(img, to: out)
 }
 
 // MARK: - 截图
@@ -426,17 +642,32 @@ dsh-ui — macOS 界面自动化（坐标 = 全局左上原点）
 
 【鼠标 / 键盘】
   move   X Y                移动光标
-  click  X Y                左键单击
+  click  X Y [MS]           左键单击（可指定按下时长，默认 30ms）
+  tap    X Y [MS]           轻点（默认 60ms，比 click 稍慢，适合网页/移动端控件）
+  press  X Y [MS]           长按（默认 800ms，用于 iOS/右键菜单这类长按交互）
   dclick X Y                左键双击
   rclick X Y                右键单击
-  drag   X1 Y1 X2 Y2        拖拽
-  scroll N                  垂直滚动 N 像素
+  drag   X1 Y1 X2 Y2 [选项] 拖拽。选项：
+         --ms N             总移动时长（默认 216）
+         --steps N          分段数（默认 12）
+         --hold N           按下后停顿再移动（默认 80）
+         --settle N         起手前停顿（默认 80）
+         --momentum F       抬手后的惯性尾巴（默认 0，滚动视图可试 1.0）
+         --edge-guard N     起手点距窗口边缘 <N pt 时告警（默认 12，0=关闭）
+  scroll N [--drag]         垂直滚动 N 像素；--drag 改用拖拽模拟
+                            （部分界面如 iPhone 镜像完全忽略合成滚轮事件）
   type   TEXT               输入文本（支持中文，绕过输入法）
+                            注意：部分目标（如 iPhone 镜像）只认真实键码，
+                            ASCII 可能退化成 aaaa，此时改用 keys
+  keys   TEXT               ASCII 逐字符发真实键码（配 shift 处理大写与符号）
   key    KEY                按键，支持 cmd+shift+4
   pos                       打印光标位置
 
 【截图】
-  shot [-D N] [-R X,Y,W,H] [-C] [-c] [-o PATH]
+  shot [-D N] [-R X,Y,W,H] [-C] [-c] [-o PATH] [--grid [N]] [--zoom [N]]
+                            默认输出原图；--grid 叠加**带全局坐标数字**的标尺网格，
+                            --zoom 无插值放大 N 倍（默认 2），便于逐个像素量取小图标。
+                            派生图写在原图旁（-grid/-zoomNx 后缀），原图保留。
   displays                  屏幕坐标对照表
 
 【定位】
@@ -485,6 +716,8 @@ func doShot(_ args: [String]) -> Int32 {
     var withCursor = false
     var toClipboard = false
     var outPath: String? = nil
+    var gridStep: CGFloat? = nil
+    var zoomFactor: CGFloat = 1
 
     var i = 2
     while i < args.count {
@@ -502,6 +735,14 @@ func doShot(_ args: [String]) -> Int32 {
         case "-o":
             guard i + 1 < args.count else { print("用法: shot -o PATH"); return 2 }
             outPath = args[i + 1]; i += 2
+        case "--grid":
+            gridStep = 50
+            if i + 1 < args.count, let v = Double(args[i + 1]), v > 0 { gridStep = CGFloat(v); i += 2 }
+            else { i += 1 }
+        case "--zoom":
+            zoomFactor = 2
+            if i + 1 < args.count, let v = Double(args[i + 1]), v > 1 { zoomFactor = CGFloat(v); i += 2 }
+            else { i += 1 }
         default: print("未知选项: \(args[i])"); return 2
         }
     }
@@ -522,18 +763,41 @@ func doShot(_ args: [String]) -> Int32 {
     guard let c = capture(display: display, rect: rect, withCursor: withCursor, outPath: outPath) else {
         print("截图失败 — 检查「屏幕录制」权限"); return 1
     }
-    print("ok path=\(c.path) \(c.label) px=\(Int(c.pxSize.width))x\(Int(c.pxSize.height))"
+
+    // 派生图：放大 -> 网格（顺序固定，网格坐标按放大后的像素密度标注）
+    var finalPath = c.path
+    var effScale = c.scale
+    if zoomFactor > 1 {
+        let z = derivedPath(c.path, "-zoom\(Int(zoomFactor))x")
+        if zoomImage(path: c.path, factor: zoomFactor, out: z) {
+            finalPath = z; effScale = c.scale * zoomFactor
+        } else { print("  警告: 放大失败，已保留原图") }
+    }
+    if let g = gridStep {
+        let gp = derivedPath(finalPath, "-grid")
+        if drawGrid(path: finalPath, origin: c.origin, scale: effScale, step: g, out: gp) {
+            finalPath = gp
+        } else { print("  警告: 网格绘制失败，已保留未叠加图") }
+    }
+
+    print("ok path=\(finalPath) \(c.label) px=\(Int(c.pxSize.width))x\(Int(c.pxSize.height))"
         + " pt=\(Int(c.ptSize.width))x\(Int(c.ptSize.height))"
-        + " scale=\(fmt(c.scale)) origin=(\(Int(c.origin.x)),\(Int(c.origin.y)))")
-    print("   mapping: global_x = \(Int(c.origin.x)) + px_x/\(fmt(c.scale))"
-        + "   global_y = \(Int(c.origin.y)) + px_y/\(fmt(c.scale))")
+        + " scale=\(fmt(c.scale)) origin=(\(Int(c.origin.x)),\(Int(c.origin.y)))"
+        + (zoomFactor > 1 ? " zoom=\(fmt(zoomFactor))x" : "")
+        + (gridStep != nil ? " grid=\(fmt(gridStep!))pt" : ""))
+    print("   mapping: global_x = \(Int(c.origin.x)) + px_x/\(fmt(effScale))"
+        + "   global_y = \(Int(c.origin.y)) + px_y/\(fmt(effScale))")
+    if finalPath != c.path { print("   原图: \(c.path)") }
+    if gridStep != nil {
+        print("   网格已把**全局左上坐标**写在图上：红线标 x，蓝线标 y，粗线是 5 格整数倍")
+    }
     return 0
 }
 
 func doFindText(_ args: [String]) -> Int32 {
     guard args.count >= 3 else { print("用法: find-text \"文字\" [--all] [--fast] [--click] [--list]"); return 2 }
     let needle = args[2]
-    var all = false, fast = false, doClick = false, listAll = false
+    var all = false, fast = false, doClick = false, listAll = false, jsonOut = false
     var display: Int? = nil, rect: CGRect? = nil
     var i = 3
     while i < args.count {
@@ -542,6 +806,7 @@ func doFindText(_ args: [String]) -> Int32 {
         case "--fast": fast = true; i += 1
         case "--click": doClick = true; i += 1
         case "--list": listAll = true; i += 1
+        case "--json": jsonOut = true; i += 1
         case "-D":
             guard i + 1 < args.count, let n = Int(args[i + 1]) else { return 2 }
             display = n; i += 2
@@ -558,6 +823,49 @@ func doFindText(_ args: [String]) -> Int32 {
     guard let hits = ocr(c.path, fast: fast) else { print("OCR 失败"); return 1 }
 
     let matches = hits.filter { $0.text.range(of: needle, options: .caseInsensitive) != nil }
+
+    // --json：把整块结果交给上层脚本判断（配合 --click 仍会执行点击）
+    if jsonOut {
+        func enc(_ h: OcrHit) -> [String: Any] {
+            let g = toGlobal(CGPoint(x: h.pxRect.midX, y: h.pxRect.midY), c)
+            return ["text": h.text,
+                    "conf": Double(h.conf),
+                    "px_center": [Int(h.pxRect.midX), Int(h.pxRect.midY)],
+                    "global": [Int(g.x.rounded()), Int(g.y.rounded())],
+                    "px_rect": [Int(h.pxRect.origin.x), Int(h.pxRect.origin.y),
+                                Int(h.pxRect.width), Int(h.pxRect.height)]]
+        }
+        var clicked: [Int]? = nil
+        if doClick, let first = matches.first {
+            let g = toGlobal(CGPoint(x: first.pxRect.midX, y: first.pxRect.midY), c)
+            if gDry {
+                clicked = [Int(g.x), Int(g.y)]
+            } else if guardPoint(g) {
+                let p = CGPoint(x: g.x.rounded(), y: g.y.rounded())
+                tapAt(p, holdMS: 30)
+                clicked = [Int(p.x), Int(p.y)]
+            }
+        }
+        let root: [String: Any] = [
+            "ok": !matches.isEmpty,
+            "needle": needle,
+            "capture": ["path": c.path, "label": c.label,
+                        "origin": [Int(c.origin.x), Int(c.origin.y)],
+                        "scale": Double(c.scale),
+                        "px": [Int(c.pxSize.width), Int(c.pxSize.height)],
+                        "pt": [Int(c.ptSize.width), Int(c.ptSize.height)]],
+            "hits": hits.map(enc),
+            "matches": matches.map(enc),
+            "clicked": clicked as Any,
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: root, options: [.sortedKeys]),
+           let s = String(data: data, encoding: .utf8) {
+            print(s)
+        } else {
+            print("{\"ok\":false,\"error\":\"json 序列化失败\"}")
+        }
+        return matches.isEmpty ? 1 : 0
+    }
 
     // --list：只转储识别结果，不做匹配（诊断用）
     if listAll {
@@ -1097,41 +1405,90 @@ func dispatch(_ args: [String]) -> Int32 {
         post(.mouseMoved, p)
         printCursor(); return 0
 
-    case "click", "dclick", "rclick":
-        guard args.count >= 4 else { print("用法: \(cmd) X Y"); return 2 }
+    case "click", "dclick", "rclick", "tap", "press":
+        guard args.count >= 4 else {
+            print("用法: \(cmd) X Y" + ((cmd == "tap" || cmd == "press" || cmd == "click") ? " [MS]" : ""))
+            return 2
+        }
         let p = point(args, 2)
-        if gDry { print("dry: would \(cmd) (\(Int(p.x)),\(Int(p.y)))"); return 0 }
+        // 可选按下时长（毫秒）：click 默认 30（与旧行为一致），tap 60，press 800（触发 iOS 长按菜单）
+        let defaultHold = cmd == "press" ? 800 : (cmd == "tap" ? 60 : 30)
+        let holdMS = args.count >= 5 ? (Int(args[4]) ?? defaultHold) : defaultHold
+        if gDry { print("dry: would \(cmd) (\(Int(p.x)),\(Int(p.y))) hold=\(holdMS)ms"); return 0 }
         guard guardPoint(p) else { return 3 }
         switch cmd {
-        case "click":
-            post(.leftMouseDown, p); usleep(30_000); post(.leftMouseUp, p)
+        case "click", "tap", "press":
+            tapAt(p, holdMS: holdMS)
         case "dclick":
-            post(.leftMouseDown, p); post(.leftMouseUp, p); usleep(60_000)
-            post(.leftMouseDown, p); post(.leftMouseUp, p)
+            tapAt(p, holdMS: 30); usleep(60_000); tapAt(p, holdMS: 30)
         default:
             post(.rightMouseDown, p, .right); usleep(30_000); post(.rightMouseUp, p, .right)
         }
         printCursor(); return 0
 
     case "drag":
-        guard args.count >= 6 else { print("用法: drag X1 Y1 X2 Y2"); return 2 }
-        let s = point(args, 2), e = point(args, 4)
-        if gDry { print("dry: would drag (\(Int(s.x)),\(Int(s.y))) -> (\(Int(e.x)),\(Int(e.y)))"); return 0 }
-        guard guardPoint(s) else { return 3 }
-        post(.mouseMoved, s); usleep(80_000)
-        post(.leftMouseDown, s); usleep(80_000)
-        for i in 1...12 {
-            let t = Double(i) / 12.0
-            post(.leftMouseDragged,
-                 CGPoint(x: s.x + (e.x - s.x) * t, y: s.y + (e.y - s.y) * t))
-            usleep(18_000)
+        guard args.count >= 6 else {
+            print("用法: drag X1 Y1 X2 Y2 [--ms N] [--steps N] [--hold N] [--settle N] [--momentum F] [--edge-guard N]")
+            return 2
         }
-        post(.leftMouseUp, e)
+        let s = point(args, 2), e = point(args, 4)
+        // 默认值与旧实现完全一致：settle 80ms -> 按下 -> hold 80ms -> 12 步 / 共 216ms -> 抬起
+        var moveMS = 216, steps = 12, holdMS = 80, settleMS = 80
+        var momentum = 0.0
+        var edgeGuard = 12.0
+        var j = 6
+        while j < args.count {
+            switch args[j] {
+            case "--ms":    guard j + 1 < args.count, let v = Int(args[j + 1]) else { return 2 }; moveMS = v; j += 2
+            case "--steps": guard j + 1 < args.count, let v = Int(args[j + 1]) else { return 2 }; steps = v; j += 2
+            case "--hold":  guard j + 1 < args.count, let v = Int(args[j + 1]) else { return 2 }; holdMS = v; j += 2
+            case "--settle": guard j + 1 < args.count, let v = Int(args[j + 1]) else { return 2 }; settleMS = v; j += 2
+            case "--momentum": guard j + 1 < args.count, let v = Double(args[j + 1]) else { return 2 }; momentum = v; j += 2
+            case "--edge-guard": guard j + 1 < args.count, let v = Double(args[j + 1]) else { return 2 }; edgeGuard = v; j += 2
+            default: print("未知选项: \(args[j])"); return 2
+            }
+        }
+        // 先算护栏告警（只读 AX 查询），这样 --dry 也能报出来
+        let dragWarn = edgeWarning(s, margin: CGFloat(edgeGuard))
+        if gDry {
+            print("dry: would drag (\(Int(s.x)),\(Int(s.y))) -> (\(Int(e.x)),\(Int(e.y)))"
+                + " settle=\(settleMS) hold=\(holdMS) move=\(moveMS) steps=\(steps) momentum=\(momentum)")
+            if let w = dragWarn { print("  警告: \(w)") }
+            return 0
+        }
+        guard guardPoint(s) else { return 3 }
+        if let w = dragWarn { print("  警告: \(w)") }
+        dragGesture(from: s, to: e, settleMS: settleMS, holdMS: holdMS,
+                    moveMS: moveMS, steps: steps, momentum: momentum)
         printCursor(); return 0
 
     case "scroll":
-        guard args.count >= 3, let dy = Int32(args[2]) else { print("用法: scroll N"); return 2 }
-        if gDry { print("dry: would scroll \(dy)"); return 0 }
+        guard args.count >= 3, let dy = Int32(args[2]) else { print("用法: scroll N [--drag]"); return 2 }
+        var asDrag = false
+        var j = 3
+        while j < args.count {
+            switch args[j] {
+            case "--drag": asDrag = true; j += 1
+            default: print("未知选项: \(args[j])"); return 2
+            }
+        }
+        if gDry { print("dry: would scroll \(dy)\(asDrag ? " (as drag)" : "")"); return 0 }
+
+        // --drag：部分界面（实测 iPhone 镜像）完全忽略合成滚轮事件，只能用拖拽模拟滚动。
+        // 语义与滚轮一致：dy>0 = 向下滚 = 内容上移 = 手指上滑。
+        if asDrag {
+            let cur = currentGlobalCursor()
+            let d = displays().first { $0.contains(cur) } ?? displays()[0]
+            let vf = d.visibleTL
+            let end = CGPoint(x: cur.x,
+                              y: min(max(cur.y - CGFloat(dy), vf.minY + 6), vf.maxY - 6))
+            guard guardPoint(cur) else { return 3 }
+            if let w = edgeWarning(cur, margin: 12) { print("  警告: \(w)") }
+            dragGesture(from: cur, to: end, settleMS: 60, holdMS: 90, moveMS: 260,
+                        steps: 18, momentum: 1.0)
+            print("ok 以拖拽模拟滚动 \(dy)px: (\(Int(cur.x)),\(Int(cur.y))) -> (\(Int(end.x)),\(Int(end.y)))")
+            return 0
+        }
         // 必须模拟一次完整的滚动手势：单个大幅度事件会被不少界面忽略。
         // 实测钉钉导航面板只认「phase 序列 + 小步长增量」，而单个 600px 事件毫无反应。
         let src = CGEventSource(stateID: .hidSystemState)
@@ -1172,6 +1529,31 @@ func dispatch(_ args: [String]) -> Int32 {
         if gDry { print("dry: would type \(text.count) 字符"); return 0 }
         typeString(text)
         return 0
+
+    case "keys":
+        guard args.count >= 3 else { print("用法: keys TEXT"); return 2 }
+        let ktext = args[2...].joined(separator: " ")
+        if gDry {
+            // 干跑时逐字符列出「字符 -> 键码(+shift)」，用于核对映射而不真的敲键盘
+            var parts: [String] = []
+            for ch in ktext {
+                if let st = strokeFor(ch) {
+                    parts.append("\(ch)=\(st.code)\(st.shift ? "+shift" : "")")
+                } else {
+                    parts.append("\(ch)=无键码")
+                }
+            }
+            print("dry: would send \(ktext.count) 个键码字符:")
+            print("  " + parts.joined(separator: " "))
+            return 0
+        }
+        let kr = typeKeys(ktext)
+        var kline = "ok keys 发送 \(kr.sent) 个字符"
+        if !kr.skipped.isEmpty {
+            kline += "；跳过 \(kr.skipped.count) 个无键码字符: \(String(kr.skipped))"
+        }
+        print(kline)
+        return kr.sent > 0 ? 0 : 1
 
     case "key":
         guard args.count >= 3 else { print("用法: key KEY"); return 2 }
