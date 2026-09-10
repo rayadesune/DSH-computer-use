@@ -75,6 +75,81 @@ func appUnder(_ p: CGPoint) -> (bundle: String, name: String)? {
     return (app.bundleIdentifier ?? "?", app.localizedName ?? "?")
 }
 
+/// 同 appUnder，但返回 App 对象本身（点击前自动激活要用）。
+func runningAppUnder(_ p: CGPoint) -> NSRunningApplication? {
+    let sys = AXUIElementCreateSystemWide()
+    var el: AXUIElement?
+    guard AXUIElementCopyElementAtPosition(sys, Float(p.x), Float(p.y), &el) == .success,
+          let e = el else { return nil }
+    var pid: pid_t = 0
+    AXUIElementGetPid(e, &pid)
+    return NSRunningApplication(processIdentifier: pid)
+}
+
+/// 当前前台 App 的 pid。
+/// 必须走 AX 的 kAXFocusedApplication：这是个**实时**查询。
+/// NSWorkspace.frontmostApplication 的值靠 run loop 刷新，而 dsh-ui 是一次性 CLI、
+/// 从不跑 run loop，读它经常拿到过期值（实测会误报「激活失败」）。
+func frontmostPID() -> pid_t? {
+    let sys = AXUIElementCreateSystemWide()
+    var v: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(sys, kAXFocusedApplicationAttribute as CFString, &v) == .success,
+          let raw = v else { return nil }
+    let el = raw as! AXUIElement
+    var pid: pid_t = 0
+    AXUIElementGetPid(el, &pid)
+    return pid > 0 ? pid : nil
+}
+
+func isFrontmost(_ app: NSRunningApplication) -> Bool {
+    if let pid = frontmostPID() { return pid == app.processIdentifier }
+    return NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier
+}
+
+/// 轮询等待 App 真正成为前台。
+/// activate() 是异步的：调用后立刻投递的事件会落在「还没成为前台」的窗口上，
+/// 被 macOS 当成激活点击吃掉——这就是「第一次点击没反应、要点两次」的根因。
+/// 间隔里跑一小段 run loop（而不是纯 usleep），让 AppKit 的状态与事件队列跟上。
+@discardableResult
+func waitFrontmost(_ app: NSRunningApplication, timeoutMS: Int = 600) -> Bool {
+    let deadline = Date().addingTimeInterval(Double(timeoutMS) / 1000.0)
+    repeat {
+        if isFrontmost(app) { return true }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+    } while Date() < deadline
+    return isFrontmost(app)
+}
+
+/// 激活 App 并等到它真的到前台（带超时，不会卡死）。
+/// macOS 14+ 的 activate() 遵守「防抢焦点」规则，可能被推迟甚至忽略，
+/// 所以第一手段失败后再用 AX 的 kAXFrontmost 兜一次——后者对已获辅助功能
+/// 授权的进程更可靠（实测微信这类后台 App 只有第二手段才在超时内生效）。
+@discardableResult
+func activateApp(_ app: NSRunningApplication, timeoutMS: Int = 800) -> Bool {
+    if isFrontmost(app) { return true }
+    let half = max(150, timeoutMS / 2)
+    if #available(macOS 14.0, *) {
+        app.activate()
+    } else {
+        app.activate(options: [.activateIgnoringOtherApps])
+    }
+    if waitFrontmost(app, timeoutMS: half) { return true }
+    let ax = AXUIElementCreateApplication(app.processIdentifier)
+    AXUIElementSetAttributeValue(ax, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+    return waitFrontmost(app, timeoutMS: half)
+}
+
+/// 点击/拖拽前的保险：目标 App 不在前台时先激活，避免第一击被「激活点击」吃掉。
+/// 返回 nil 表示无需处理；否则返回给用户的提示文本（成功与否）。
+func ensureFrontmostForClick(_ p: CGPoint) -> String? {
+    guard let target = runningAppUnder(p), !isFrontmost(target) else { return nil }
+    let ok = activateApp(target, timeoutMS: 500)
+    let name = target.localizedName ?? "?"
+    return ok
+        ? "提示: 目标 App「\(name)」先前不在前台，已先激活再点击"
+        : "警告: 目标 App「\(name)」未能成为前台（可能被其他窗口抢占），本次点击可能只用于激活窗口"
+}
+
 /// 返回非 nil 表示被拦截
 func deniedReason(at p: CGPoint) -> String? {
     let list = denyList()
@@ -642,7 +717,11 @@ dsh-ui — macOS 界面自动化（坐标 = 全局左上原点）
 
 【鼠标 / 键盘】
   move   X Y                移动光标
-  click  X Y [MS]           左键单击（可指定按下时长，默认 30ms）
+  click  X Y [MS] [--no-activate]
+                            左键单击（可指定按下时长，默认 30ms）。
+                            若落点所属 App 不在前台，会**先激活它再点击**，
+                            避免 macOS 把第一击当成「激活窗口」吃掉；
+                            用 --no-activate 关闭该行为（不想被抢焦点时）
   tap    X Y [MS]           轻点（默认 60ms，比 click 稍慢，适合网页/移动端控件）
   press  X Y [MS]           长按（默认 800ms，用于 iOS/右键菜单这类长按交互）
   dclick X Y                左键双击
@@ -992,9 +1071,11 @@ func doWin(_ args: [String]) -> Int32 {
 
                 switch args[2] {
                 case "focus":
-                    a.activate(options: [.activateIgnoringOtherApps])
+                    let ok = activateApp(a, timeoutMS: 700)
                     AXUIElementPerformAction(w, kAXRaiseAction as CFString)
-                    print("ok focused [\(n)] \(a.localizedName ?? "?")")
+                    let front = ok && waitFrontmost(a, timeoutMS: 250)
+                    print("ok focused [\(n)] \(a.localizedName ?? "?")"
+                        + (front ? "" : "（警告：未能确认成为前台 App — 下一击可能只用于激活窗口，必要时点两次）"))
 
                 case "maximize":
                     // 先取消全屏态，否则尺寸设置会被忽略
@@ -1413,9 +1494,27 @@ func dispatch(_ args: [String]) -> Int32 {
         let p = point(args, 2)
         // 可选按下时长（毫秒）：click 默认 30（与旧行为一致），tap 60，press 800（触发 iOS 长按菜单）
         let defaultHold = cmd == "press" ? 800 : (cmd == "tap" ? 60 : 30)
-        let holdMS = args.count >= 5 ? (Int(args[4]) ?? defaultHold) : defaultHold
-        if gDry { print("dry: would \(cmd) (\(Int(p.x)),\(Int(p.y))) hold=\(holdMS)ms"); return 0 }
+        var holdMS = defaultHold
+        var autoActivate = true
+        var ai = 4
+        while ai < args.count {
+            switch args[ai] {
+            case "--no-activate": autoActivate = false; ai += 1
+            default:
+                if let v = Int(args[ai]) { holdMS = v; ai += 1 }
+                else { print("未知选项: \(args[ai])"); return 2 }
+            }
+        }
+        if gDry {
+            print("dry: would \(cmd) (\(Int(p.x)),\(Int(p.y))) hold=\(holdMS)ms"
+                + (autoActivate ? "" : " no-activate"))
+            return 0
+        }
         guard guardPoint(p) else { return 3 }
+        if autoActivate, let note = ensureFrontmostForClick(p) {
+            print("  \(note)")
+            gNote = note          // 同时留痕到审计日志，便于事后解释焦点变化
+        }
         switch cmd {
         case "click", "tap", "press":
             tapAt(p, holdMS: holdMS)
