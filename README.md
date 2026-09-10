@@ -21,22 +21,55 @@ swiftc -O dsh-ui.swift -o ~/.local/bin/dsh-ui
 
 ```sh
 dsh-ui move   X Y                # 移动光标
-dsh-ui click  X Y                # 左键单击
+dsh-ui click  X Y [MS] [--no-activate]
+                                 # 左键单击，可指定按下时长（默认 30ms）
+                                 # 落点所属 App 不在前台时，会先激活它再点击，
+                                 # 避免 macOS 把第一击当成「激活窗口」吃掉
+dsh-ui tap    X Y [MS]           # 轻点（默认 60ms，网页/移动端控件更稳）
+dsh-ui press  X Y [MS]           # 长按（默认 800ms，iOS 长按菜单/右键式交互）
 dsh-ui dclick X Y                # 左键双击
 dsh-ui rclick X Y                # 右键单击
-dsh-ui drag   X1 Y1 X2 Y2        # 拖拽
-dsh-ui scroll N                  # 垂直滚动 N 像素
+dsh-ui drag   X1 Y1 X2 Y2 [选项] # 拖拽，默认参数与旧行为一致
+                                 #   --ms N          总移动时长（默认 216）
+                                 #   --steps N       分段数（默认 12）
+                                 #   --hold N        按下后停顿再移动（默认 80）
+                                 #   --settle N      起手前停顿（默认 80）
+                                 #   --momentum F    抬手后的惯性尾巴（默认 0）
+                                 #   --edge-guard N  起手点距窗口边缘 <N pt 时告警（默认 12）
+dsh-ui scroll N [--drag]         # 垂直滚动 N 像素；--drag 用拖拽模拟
+                                 #（有些界面完全忽略合成滚轮事件，例如 iPhone 镜像）
 dsh-ui type   TEXT               # 输入文本（支持中文，绕过输入法）
+dsh-ui keys   TEXT               # ASCII 逐字符发**真实键码**（大写/符号带 shift）
 dsh-ui key    KEY                # 按键，支持 cmd+shift+4
 dsh-ui pos                       # 打印光标位置
 ```
 
+`type` 与 `keys` 的区别（实测踩过）：`type` 用「virtualKey 恒为 0 + unicode 载荷」注入。
+macOS 原生控件认这个载荷，所以本机可用；但像 **iPhone 镜像** 这类按 HID 键码查键盘布局
+的目标，会把所有 ASCII 变成 `a`（`type "shortcut"` → `aaaaaaaa`），而非 ASCII 才回退到
+载荷——这就是「中文正常、英文全变 a」的成因。要往这类目标打字就用 `keys`。
+`dsh-ui --dry keys "Ab-1!"` 会逐字符打印映射，不真的敲键盘。
+
 ### 截图
 
 ```sh
-dsh-ui shot [-D N] [-R X,Y,W,H] [-C] [-c] [-o PATH]
+dsh-ui shot [-D N] [-R X,Y,W,H] [-C] [-c] [-o PATH] [--grid [N]] [--zoom [N]]
 dsh-ui displays
 ```
+
+`--grid [N]`（默认 50pt）在图上叠加**带全局坐标数字**的标尺：红线标 x、蓝线标 y，
+每 5 格加粗。`--zoom [N]`（默认 2）用无插值方式放大，便于逐像素量取小图标。
+派生图写在原图旁（`-grid` / `-zoomNx` 后缀），原图保留，路径会在输出里打印。
+
+```sh
+$ dsh-ui shot -R -1010,150,80,260 --grid 50 --zoom 2
+ok path=/tmp/.../shot-...-zoom2x-grid.png rect on display #2 px=160x520 pt=80x260 scale=2 origin=(-1010,150) zoom=2x grid=50pt
+   mapping: global_x = -1010 + px_x/4   global_y = 150 + px_y/4
+   原图: /tmp/.../shot-....png
+```
+
+量 `✕`、`⌄`、`▶` 这类纯图标按钮时**不要目测缩放预览图**——本项目就是这么把坐标量偏
+30pt、连点四次都没删掉一个动作的。用网格图标尺量。
 
 `shot` 会自动打印坐标映射：
 
@@ -58,8 +91,17 @@ main height = 900pt  (左下->左上 换算基准)
 ### 定位（两条互补通道）
 
 ```sh
-dsh-ui find-text "哔哩哔哩" [--all] [--fast] [--click] [--list] [-D N] [-R X,Y,W,H]
+dsh-ui find-text "哔哩哔哩" [--all] [--fast] [--click] [--list] [--json] [-D N] [-R X,Y,W,H]
 dsh-ui find-ax  "搜索商店" [--app 名称] [--pid N] [--all]
+```
+
+`--json` 输出单个机器可读对象（`capture` / `hits` / `matches` / `clicked`），
+没匹配到时返回 1，方便上层脚本直接判断而不用解析人读文本；`--json` 可以和
+`--click` 合用，在同一次调用里点掉最佳匹配：
+
+```
+$ dsh-ui find-text "新会话" --json
+{"capture":{...},"clicked":null,"hits":[...],"matches":[{"conf":1,"global":[93,470],...}]}
 ```
 
 | | `find-text`（Vision OCR） | `find-ax`（Accessibility 树） |
@@ -83,11 +125,18 @@ ok "Developer" 匹配 1 处 (display #1 (main), mapping: global = (0,0) + px/2)
 
 ```sh
 dsh-ui win list                  # 列出所有窗口：位置/尺寸/中心点/pid
-dsh-ui win focus N               # 聚焦第 N 个窗口
+dsh-ui win focus N               # 聚焦第 N 个窗口（会等到它真的成为前台再返回）
 dsh-ui win maximize N            # 填满所在屏幕的可见区（排除菜单栏/Dock）
 dsh-ui win fullscreen N          # 切换 macOS 原生全屏
 dsh-ui win move N X Y [W H]      # 移动/缩放第 N 个窗口
 ```
+
+`win focus` 会**轮询到目标 App 真正成为前台**才返回（最多约 700ms），失败会打印警告。
+原因：`activate()` 是异步的，紧接着投递的点击会落在「还没成为前台」的窗口上，被
+macOS 当成激活点击吃掉——这就是「第一次点击没反应、要点两次」的根因。前台判定用
+AX 的 `kAXFocusedApplication` 实时查询，**不要**用 `NSWorkspace.frontmostApplication`：
+它是靠 run loop 刷新的，而 dsh-ui 是一次性 CLI、从不跑 run loop，读到的常是过期值
+（曾因此把成功的激活误报为失败）。
 
 `win list` 是拿到窗口矩形最快的方式（比手写 AX 探测脚本省事）：
 
@@ -242,6 +291,20 @@ dsh-ui diff before.png after.png
   **Safari/WebKit 5.17%**（修正前 Safari 完全无效）。
 - `type` 对某些只认物理键码的原生控件（如 `<select>` 下拉菜单）无效，
   此时改用 `key` 发真实键码。
+- **`type` 的 ASCII 在「按键码查布局」的目标上会退化成 `a`**（实测 iPhone 镜像：
+  `type "shortcut"` → `aaaaaaaa`，而同一目标的 `type "照片"` 正常）。成因是
+  `typeString()` 每字符都用 `virtualKey 0` + unicode 载荷：原生 Cocoa 控件认载荷，
+  这类目标只认键码、只有布局产不出的字符（CJK）才回退到载荷。改用 `keys`。
+- **`under X Y` 会指错、也会什么都返回不了**：它是无障碍命中测试，实测在一个像素
+  明显属于微信的点上返回了「访达」（桌面），另一个明明有窗口的点返回
+  「没有 AX 元素」。点击要紧时用 `shot`/`win list` 佐证。
+- **镜像窗口底边是缩放手柄**：起手点距底边 ~10pt 内的拖拽会变成窗口缩放
+  （实测把 454×994 的窗口缩成 271×598）。`drag` 默认以 `--edge-guard 12` 告警，
+  误缩后用 `win maximize N` 恢复。
+- **iPhone 镜像忽略合成滚轮事件**，部分列表（如快捷指令的动作列表）连合成拖拽也
+  不响应。先用 `scroll N --drag` 试；仍不动就改用界面自带的搜索框/菜单直达。
+- **"没有报错" ≠ "成功了"**：本项目出现过整条管线全绿、产物却只有一帧的情况。
+  需要确认动效/多帧时，隔约 1 秒截两张再 `diff`。
 - `--change` 的默认门槛是 2000 像素；若目标区域本身有动画，需要调高
   `--min-change` 或用 `-R` 缩小观察范围。
 - 没有内建交互式选窗口（`-w`）模式，窗口矩形请用 `win list` 获取。
