@@ -1,0 +1,14 @@
+# 构建产物
+.build/
+/dsh-ui
+*.o
+*.swiftmodule
+Package.resolved
+
+# macOS
+.DS_Store
+._*
+
+# 编辑器
+.vscode/
+.idea/
