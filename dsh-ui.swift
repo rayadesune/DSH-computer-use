@@ -829,6 +829,23 @@ func doShot(_ args: [String]) -> Int32 {
         print("没有第 \(d) 块屏；可用: \(displays().map { $0.index })"); return 2
     }
 
+    // --dry 语义：只描述、不执行。截图需要「屏幕录制」权限，
+    // CI 这类没有授权的环境必须能安全地干跑，否则没法做冒烟测试。
+    if gDry {
+        var d = "dry: would shot"
+        if let n = display { d += " -D \(n)" }
+        if let r = rect {
+            d += " -R \(Int(r.origin.x)),\(Int(r.origin.y)),\(Int(r.width)),\(Int(r.height))"
+        }
+        if withCursor { d += " -C" }
+        if toClipboard { d += " -c" }
+        if let o = outPath { d += " -o \(o)" }
+        if let g = gridStep { d += " --grid \(fmt(g))" }
+        if zoomFactor > 1 { d += " --zoom \(fmt(zoomFactor))" }
+        print(d)
+        return 0
+    }
+
     if toClipboard {
         var argv: [String] = ["-x", "-c"]
         if let d = display { argv.append(contentsOf: ["-D", String(d)]) }

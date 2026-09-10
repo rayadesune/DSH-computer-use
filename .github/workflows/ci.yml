@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build & smoke test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          swift --version
+          sw_vers
+
+      # 两条构建路径都要能过：SwiftPM，以及文档里一贯使用的 swiftc 一行命令
+      - name: Build with SwiftPM
+        run: swift build -c release
+
+      - name: Build with swiftc (documented one-liner)
+        run: swiftc -O dsh-ui.swift -o dsh-ui
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          ./dsh-ui --help > /dev/null
+          ./dsh-ui displays
+          ./dsh-ui --dry keys "Abc-1!" | tail -1
+          ./dsh-ui --dry click 10 20
+          ./dsh-ui --dry tap 10 20 120
+          ./dsh-ui --dry press 10 20
+          ./dsh-ui --dry drag 10 10 90 90 --ms 300 | head -1
+          ./dsh-ui --dry scroll 120 --drag
+          # 截图需要「屏幕录制」权限，CI 上没有；--dry 必须做到完全不执行
+          ./dsh-ui --dry shot -R 0,0,100,100 --grid 40 --zoom 2
+          ./dsh-ui pos
+
+      # 防漂移：分发器里实现了的命令必须在 --help 里有名字，
+      # 否则 agent 看不到、用户也搜不到。
+      - name: Help documents every dispatched command
+        run: |
+          set -euo pipefail
+          help="$(./dsh-ui --help)"
+          missing=0
+          for c in move click tap press dclick rclick drag scroll type keys key pos \
+                   shot displays find-text find-ax win wait-for diff clipboard batch guard under; do
+            if ! grep -q -- "$c" <<<"$help"; then
+              echo "::error::--help 未覆盖命令: $c"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Docs & skill sanity
+        run: |
+          set -euo pipefail
+          test -s docs/REFERENCE.md
+          test -s README.md
+          head -5 skill/SKILL.md | grep -q '^name: dsh-macos-ui$'
+          head -5 skill/SKILL.md | grep -q '^description: '
+          grep -q 'dsh-ui' README.md
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+      - name: Lint install.sh
+        run: shellcheck install.sh
