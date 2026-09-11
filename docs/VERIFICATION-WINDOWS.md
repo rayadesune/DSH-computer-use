@@ -27,6 +27,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\verify-windows.ps1 -Al
 一个自建的 WinForms 窗口，把自身状态（文本框内容、按钮点击次数、拖拽起止点、列表滚动位置、
 每个控件的屏幕矩形）以 150ms 周期写进 JSON 文件。
 
+复现性上做了三件事：每次运行用**独立的随机状态文件**、启动前**清理上次中断残留的孤儿靶子进程**、
+结束时杀靶子并还原光标与拦截名单。这样"上一次跑挂了"不会污染下一次的结论
+（本项目确实踩过：孤儿靶子和新靶子抢写同一个状态文件，导致区域对不上、出现假失败）。
+
 断言全部回到这份状态文件取证，而不是"看输出像不像成功"：
 
 | 断言类型 | 取证方式 |
@@ -45,18 +49,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\verify-windows.ps1 -Al
 
 ## 结果
 
-**37 项断言全部通过（FAIL 0 / SKIP 0）**，宿主覆盖 PowerShell 7 与 Windows PowerShell 5.1。
+**41 项断言全部通过（FAIL 0 / SKIP 0）**，宿主覆盖 PowerShell 7 与 Windows PowerShell 5.1。
 
 | 分组 | 覆盖的断言 |
 |---|---|
-| A. CLI 基线 | `--help` 覆盖全部已分发命令、`displays` 文本+JSON、`pos`、三类用法错误 exit=2、未命中 exit=1、审计日志逐条落盘 |
-| B. 截图/像素 | `shot -R` 尺寸与映射一致、`--grid/--zoom` 派生文件与网格像素、`diff` 无差异、`wait-for --stable`、`wait-for --change` |
-| C. 定位 | `find-ax --pid`（含 pressable）、`find-ax --app` 按窗口标题匹配、`find-text` 命中坐标落在控件内、`under` |
+| A. CLI 基线 | `--help` 覆盖全部已分发命令、`displays` 文本+JSON、`pos`、三类用法错误 exit=2、未命中 exit=1、审计日志逐条落盘、**`--dry` 矩阵（17 条输入类命令逐条比对 dry 行文案）** |
+| B. 截图/像素 | `shot -R` 尺寸与映射一致、`--grid/--zoom` 派生文件与网格像素、`diff` 无差异、`wait-for --stable`、`wait-for --change`、`wait-for --text`（命中 + 超时 exit=1） |
+| C. 定位 | `find-ax --pid`（含 pressable）、`find-ax --app` 按窗口标题匹配、`find-text` 命中坐标落在控件内、`under`、**`--dry` 预演一整套动作后靶子状态零变化** |
 | D. 窗口 | `win list --json` 与 UIA 坐标一致、`win move` 回读、`win focus` 真的成为前台、`win maximize` 填满工作区 |
 | E. 真实输入 | `click` 命中按钮、`--dry` 零副作用、`type` 中文+ASCII、`keys` 大小写与符号、`key ctrl+a`+`delete`、剪贴板粘贴、`drag` 位移、`scroll` 滚动列表、`find-ax --click`、`find-text --click`、拦截名单 exit=3 |
-| F. 批量 | `batch` 从 stdin 逐条执行、注释跳过、逐条审计、`-r` 语义 |
+| F. 批量 | `batch` 从 stdin 逐条执行、注释跳过、逐条审计、`-c` 语义 |
 | G. PS 5.1 宿主 | 同一批命令在 Windows PowerShell 5.1 下复跑（`--help`/`displays`/`pos`/`shot`/`diff`/`find-text`/`find-ax`/`win list`） |
 | H. 安装/启动器 | `install.ps1` 安装后可运行、副本仍可解析、`-Uninstall` 清理干净、启动器原样透传退出码、`dsh-ui.cmd` 保持纯 ASCII |
+
+`--dry` 是逐条比对**输出文案**的（`dry: would drag (10,10) -> (200,200) settle=80 hold=80 move=300 steps=12 momentum=0` 这种整行匹配），
+再叠一层"预演 11 条动作后靶子的按钮计数 / 文本 / 拖拽标志 / 滚动位置 / 窗口位置 / 剪贴板全都没变"的副作用断言 ——
+既证明它会打印，也证明它真的没执行。
 
 ### 关键实测数据
 
@@ -155,6 +163,21 @@ OCR 质量采样（同一屏，拉丁 vs 中文）：
     用 `cmd /c "launcher.cmd ... & echo RC=%ERRORLEVEL%"` 测退出码永远得到 0（读到的是
     执行前的值）。改用 `Start-Process cmd -Wait -PassThru` 读 `ExitCode` 才拿到真值，
     实测 0/2 正常透传。
+
+13. **`Select-Object -First N` 会把上游的原生进程一起掐掉。**
+    排查失败项时用 `... | Select-String ... | Select-Object -First 20` 看输出，PowerShell 在取够
+    20 行后停止上游管道，**正在跑的套件进程被杀在半路**：`finally` 没执行，测试靶变成孤儿进程，
+    而且那次运行根本没写结果文件 —— 我一度拿着上一轮的 `results-windows.json` 当新结论。
+    现在读套件输出一律先重定向到文件再筛选，并且套件自己会清理孤儿靶子、用带 PID 的状态文件。
+
+14. **`--dry` 的"不执行"要按动作断言，不能只看它打印了什么。**
+    一开始只比对了 dry 行文案；补上副作用断言后才有说服力：预演 11 条动作（点击/长按/双击/
+    输入/键码/组合键/拖拽/移动/滚轮/剪贴板/窗口移动）之后，靶子的按钮计数、文本框内容、
+    拖拽标志、列表滚动位置、窗口矩形、剪贴板**必须一个都没变**。
+
+15. **`--dry find-text --click` 仍然会真的截图 + OCR**（与 macOS 版一致），只把点击换成打印。
+    所以它的 dry 断言必须给一个真能识别出文字的区域；用 10×10 的空区域测会得到 exit=1
+    —— 那是正确行为，不是 bug（第一版测试就写错了这一点，被套件自己纠正过来）。
 
 ## 未验证 / 已知缺口
 

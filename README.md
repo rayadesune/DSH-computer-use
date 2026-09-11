@@ -177,7 +177,7 @@ dsh-ui --dry click 100 200            # 只打印、不执行
 - **定位**：`find-ax`（UIA，可 `--pid`/`--app`，支持按窗口标题匹配）优先，`find-text`（OCR）兜底；
   Windows OCR **不提供置信度**，且**中文识别明显弱于 macOS Vision**，手册里给了实测例子。
 - **验证**：`tests/verify-windows.ps1` 会拉起一个自建 WinForms 测试靶，按靶子自己写出的状态断言
-  「点击真的落在按钮上、输入的字一模一样、拖拽位移符合请求」，本机 37 项全绿。
+  「点击真的落在按钮上、输入的字一模一样、拖拽位移符合请求」，本机 41 项全绿。
 - ⚠ **未实测**：多显示器、提权窗口（UIPI）、锁屏状态——本机没有对应环境，手册里已标注。
 
 ## 项目结构
@@ -196,7 +196,7 @@ docs/VERIFICATION-WINDOWS.md  # Windows 版本机实测记录
 skill/SKILL.md            # 给 agent 的操作规范（macOS）
 skill-win/SKILL.md        # 给 agent 的操作规范（Windows）
 tests/ui-target.ps1       # 受控 WinForms 测试靶
-tests/verify-windows.ps1  # Windows 自动化验证套件（37 项断言）
+tests/verify-windows.ps1  # Windows 自动化验证套件（41 项断言）
 .github/workflows/ci.yml  # 构建 + 冒烟测试 + 文档一致性检查
 ```
 
