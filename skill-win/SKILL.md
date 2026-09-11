@@ -8,11 +8,18 @@ whenToUse: The task needs a graphical interface on this Windows machine — clic
 
 ## Summary
 
-`dsh-ui` (PowerShell, repo root `dsh-ui.ps1`, installed as `dsh-ui.cmd`) injects real HID
-events with `SendInput`, captures screenshots 1:1 in physical pixels, and locates elements
-through two complementary channels: the **UI Automation tree** (`find-ax`) and **on-screen
-OCR** (`find-text`). It reaches surfaces UIA cannot: Chromium/CEF pages, canvas, games,
-Electron shells.
+`dsh-ui` (PowerShell) injects real HID events with `SendInput`, captures screenshots 1:1 in
+physical pixels, and locates elements through two complementary channels: the **UI Automation
+tree** (`find-ax`) and **on-screen OCR** (`find-text`). It reaches surfaces UIA cannot:
+Chromium/CEF pages, canvas, games, Electron shells.
+
+**Where the tool lives** — on Windows the macOS `~/.local/bin/dsh-ui` counterpart is
+`%USERPROFILE%\.local\bin\dsh-ui.cmd` (i.e. `C:\Users\<you>\.local\bin\`), which this
+machine already has on `PATH`; `install.ps1 -Prefix "$env:USERPROFILE\.local"` puts it there.
+If `dsh-ui` does not resolve (the host process may have started before the install, so its
+`PATH` snapshot is stale), call it by absolute path instead — either
+`C:\Users\<you>\.local\bin\dsh-ui.cmd <cmd>` or `powershell -NoProfile -File <repo>\dsh-ui.ps1 <cmd>`.
+Running from the repo checkout works too and needs no install.
 
 **Prefer a non-GUI path when one exists.** CLI tools, HTTP APIs, config files and MCP
 servers are faster, more reliable and auditable. Reach for GUI automation only when the
@@ -25,6 +32,12 @@ dsh-ui guard        # denylist, audit path, dry-run state, OCR mode, DPI awarene
 dsh-ui displays     # screen geometry — read this before any click
 dsh-ui pos          # where the cursor is now
 ```
+
+If `dsh-ui` is missing entirely, run it from the checkout
+(`powershell -NoProfile -File .\dsh-ui.ps1 <cmd>`) or install it:
+`powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Prefix "$env:USERPROFILE\.local"`.
+Windows PowerShell 5.1 is the faster host (measured ~2× on `find-text`); `dsh-ui.cmd` picks it
+automatically.
 
 There are no macOS-style permission grants. Two Windows realities replace them:
 
@@ -196,7 +209,7 @@ dsh-ui wait-for --change before.png --min-change 500
 The repo ships `tests/verify-windows.ps1`, which drives a self-built WinForms target
 (`tests/ui-target.ps1`) and asserts against **state written by the target itself** — a click
 counts only if the button's own handler fired, typed text must match byte-for-byte, a drag
-must report the requested displacement. 41 assertions pass on PowerShell 7.6 and Windows
+must report the requested displacement. 42 assertions pass on PowerShell 7.6 and Windows
 PowerShell 5.1, covering: CLI baseline/exit codes/audit, region capture + grid pixels,
 `diff`, all three `wait-for` modes, OCR hit accuracy (button centre vs OCR click: 1 px),
 UIA search by pid and by title, `win move/focus/maximize`, real click, `--dry` with no side

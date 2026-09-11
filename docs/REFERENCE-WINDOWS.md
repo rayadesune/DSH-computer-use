@@ -21,11 +21,33 @@ Windows 界面自动化工具，给 DSH 这类 agent 提供一套「**看得见�
 ```powershell
 # 免安装：直接跑（推荐用 Windows PowerShell 5.1 宿主，快一倍）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\dsh-ui.ps1 displays
-# 或装到 PATH
+# 装到 %USERPROFILE%\.local\bin —— 对应 macOS 版的 ~/.local/bin
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Prefix "$env:USERPROFILE\.local"
+# 或者 Windows 原生的用户级目录 %LOCALAPPDATA%\dsh-ui\bin
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-装完后新开终端即可直接 `dsh-ui displays`（`dsh-ui.cmd` 包装脚本会自动挑宿主）。
+**装到哪**：Windows 没有约定俗成的 `~/.local/bin`，但 `%USERPROFILE%\.local\bin`
+（即 `C:\Users\<你>\.local\bin`）是它在 Windows 上的对应位置 —— 本机这个目录**本来就在用户 PATH 里**，
+装进去当场就能按名字调用，和 mac 版 `~/.local/bin/dsh-ui` 一字之差。`install.ps1` 默认只装
+`dsh-ui.ps1` + `dsh-ui.cmd`（与 mac 的 `install.sh` 一致，文档与 skill 留在仓库里），
+加 `-WithDocs` 才会把 `docs/` `skill-win/` `tests/` 一起复制到 `-Prefix` 下。
+卸载：`install.ps1 -Prefix <同一个> -Uninstall`。
+
+装完后（PATH 里已有该目录的话**当场**）即可直接：
+
+```powershell
+dsh-ui displays                  # PowerShell 命中 dsh-ui.ps1，cmd 命中 dsh-ui.cmd，两者都能用
+dsh-ui --dry click 100 200
+```
+
+如果宿主进程是在安装**之前**启动的、且该目录不在它的 PATH 里，那么按名字叫不到它 ——
+这时用绝对路径即可，两条都行：
+
+```powershell
+C:\Users\<你>\.local\bin\dsh-ui.cmd displays                          # 包装脚本，自动挑宿主
+powershell -NoProfile -File C:\Users\<你>\.local\bin\dsh-ui.ps1 displays   # 直接指定 5.1 宿主
+```
 
 **宿主选择**（实测，1920×1080 @125%）：
 
@@ -260,7 +282,7 @@ dsh-ui diff before.png after.png
 
 ## 已验证场景（本机实测）
 
-完整记录见 [`VERIFICATION-WINDOWS.md`](VERIFICATION-WINDOWS.md)：41 项断言全绿，覆盖
+完整记录见 [`VERIFICATION-WINDOWS.md`](VERIFICATION-WINDOWS.md)：42 项断言全绿，覆盖
 CLI 基线/退出码/审计、区域截图与网格像素、diff、wait-for 三种模式、OCR 与 UIA 定位精度、
 窗口 move/focus/maximize、真实点击（OCR 命中坐标与按钮中心误差 1px）、中文与 ASCII 输入、
 真实键码、`ctrl+a`/`delete`、剪贴板粘贴、拖拽落点、滚轮滚动、拦截名单 exit 3、batch 逐条审计，
