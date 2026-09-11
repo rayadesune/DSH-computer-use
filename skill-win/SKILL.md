@@ -1,4 +1,4 @@
-﻿---
+---
 name: dsh-windows-ui
 description: Operate the Windows desktop from DSH — click, type, drag, scroll, capture screenshots with coordinate mapping, locate UI elements through the UI Automation tree or on-screen OCR, manage windows, and verify results. Use whenever a task requires driving a Windows GUI app, browser, or game instead of files or CLI, or when the user asks to open/click/type/search something on their screen.
 whenToUse: The task needs a graphical interface on this Windows machine — clicking a button that has no CLI, reproducing a GUI-only bug, operating Electron/CEF/canvas apps or games, or verifying that a UI change actually rendered.
@@ -65,16 +65,21 @@ There are no macOS-style permission grants. Two Windows realities replace them:
 ```powershell
 # Events
 dsh-ui move X Y
-dsh-ui click X Y [MS] [--no-activate]   # activates the window under the point first
+dsh-ui click X Y [MS] [--no-activate] [--anyway]
 dsh-ui tap   X Y [MS]                   # light tap, 60ms (web/mobile-ish controls)
 dsh-ui press X Y [MS]                   # long press, 800ms
-dsh-ui dclick X Y | rclick X Y
+dsh-ui dclick X Y
+dsh-ui rclick X Y[--anyway]             # NOTE: rclick now also activates first (it used to skip this)
 dsh-ui drag X1 Y1 X2 Y2 [--ms N] [--steps N] [--hold N] [--settle N]
                         [--momentum F] [--edge-guard N]
 dsh-ui scroll N [--drag] [--px-per-notch N]   # positive N scrolls down
 dsh-ui type TEXT          # KEYEVENTF_UNICODE: CJK + emoji work, no IME involved
 dsh-ui keys TEXT          # ASCII as real virtual key codes (shift applied for caps/symbols)
 dsh-ui key ctrl+shift+s   # modifiers: ctrl|cmd, shift, alt|option, win|meta
+dsh-ui key down           # named keys: enter tab space esc backspace delete insert
+                          #   left up right down home end pageup pagedown
+                          #   capslock numlock printscreen pause apps f1..f24
+                          #   numpad0-9 multiply add subtract decimal divide
 dsh-ui pos
 
 # Screenshots (print the pixel→global mapping)
@@ -87,6 +92,12 @@ dsh-ui find-ax   "文字" [--app 名称] [--pid N] [--all] [--json] [--max N] [-
 dsh-ui win list [--json] | focus N | maximize N | fullscreen N | move N X Y [W H]
                          | close N | minimize N | restore N
 dsh-ui under X Y
+
+# Popup menus — navigate with the keyboard, never click a menu item
+dsh-ui menu --list X Y          # rclick, then list the items it can see: [n] "text" -> gx gy
+dsh-ui menu X Y "项1/项2"        # rclick, walk the path: Down to the item, Right into a
+                                # submenu, Enter on the last one; self-checks the highlight
+dsh-ui menu --close             # Esc twice, clears a menu left open
 
 # Verify
 dsh-ui wait-for --text "文字" [--timeout 20] [--interval 0.6]
@@ -101,6 +112,10 @@ dsh-ui --dry <any command>  # print the action, execute nothing
 ```
 
 Exit codes: `0` ok, `1` not found or timeout, `2` usage error, `3` blocked by the denylist.
+**Click semantics changed**: every click command (including `rclick`) verifies the target window
+is foreground first, retrying activation up to 3 times; if it still is not, the click is
+**not sent** and the command returns `1`. Pass `--anyway` to click regardless (rarely wanted:
+that is exactly how clicks get silently eaten).
 
 `find-text --json` prints one machine-readable object
 (`{capture:{label,origin,px,pt,scale,path}, needle, ok, hits:[…], matches:[…], clicked}`)
@@ -124,6 +139,61 @@ Never eyeball a coordinate from a downscaled preview. For small icon-only target
 capture the region with `--grid` and `--zoom` and read the numbers printed on the image
 (red lines label x, blue lines label y, every 5th line is thick) — both axes step from the
 top-left, so labels line up with their lines.
+
+Two extra disciplines that came out of a long real session:
+
+* **The attachment is often not the screenshot.** A 1920×1080 capture routinely comes back as a
+  1066×600 preview; estimating coordinates off that preview is off by ~1.8×. Either work from
+  `-R` + `--zoom` crops that print their own mapping, or scale every preview coordinate by
+  `full_width / preview_width` explicitly.
+* **The view moves between calls.** Scroll/zoom/caret changes invalidate earlier coordinates: a
+  point that hit a control two calls ago can hit a different one now. Re-locate (or re-shoot)
+  before the acting call instead of reusing remembered numbers.
+
+## Popup menus
+
+A menu is a separate `#32768` popup window, it is not in the UIA tree, and CJK items come back
+from OCR with spaces inserted (`返回` → `派 回`). Clicking an item is also the most fragile
+action there is: any focus hiccup lands the click behind the menu. So navigate by keyboard:
+
+```powershell
+dsh-ui menu --list 700 400          # 1) see what is actually in the menu
+dsh-ui menu 700 400 "选择项/数据"    # 2) walk it: Down xN, Right into a submenu, Enter at the end
+dsh-ui menu --close                 # 3) clean up if you aborted
+```
+
+`menu` rclicks, locates the popup (window-under-point change → before/after pixel diff → window
+class `#32768`), OCRs only inside it, then walks with `down`/`up`/`right`/`enter`, self-checking
+the highlight bar and correcting by ±1 when it drifted. Matching ignores whitespace, so OCR's
+inserted spaces do not break the lookup. On failure it lists what it did see and presses Esc —
+it never fires blind keystrokes.
+
+Known limit: a menu that opens **upward** (taskbar right-click) can evade the diff-based
+localisation; the command then says so and falls back to a region OCR, which may mix in text
+from behind the menu. In that case run `menu --list` first, then confirm the item text before
+navigating, or drive `key down`/`key enter` yourself.
+
+Driving menus by hand is fine when you must: `key down` steps through items (greyed items are
+skipped, which is exactly why a pure "count the OCR lines" index drifts), `key right` opens a
+submenu, `key enter` commits, `key esc` closes. Submenus close as soon as the mouse leaves them,
+so a "hover → screenshot → click the item" sequence usually loses the menu between the two steps.
+
+## Focus, and why clicks disappear
+
+Clicks are delivered to whatever window is foreground, not to the window under the cursor. On a
+busy desktop (a browser or chat app stealing focus, an app with a modal dialog) a click can
+therefore be swallowed while the command still reports success. The tool now guards this:
+
+* every click command activates the window under the point and **verifies** it became foreground,
+  retrying up to 3 times;
+* if it still is not foreground the click is **not sent** and the command returns `1`
+  (`--anyway` forces it; `--no-activate` only checks);
+* watch the exit code, and re-issue after `win focus N` when you get a `1`.
+
+Two related traps: a modal dialog blocks the app underneath, so list windows and dismiss dialogs
+before blaming the click; and a mis-aimed click on empty canvas can pop a **palette** (a floating
+window, not a menu) — if the follow-up menu looks wrong, re-locate the target instead of
+retrying the click.
 
 ## Which channel to use
 
@@ -180,6 +250,26 @@ dsh-ui wait-for --change before.png --min-change 500
 - Never type credentials or secrets. Never automate a denylisted app.
 - `--dry` only suppresses side effects: `find-text`, `wait-for`, `diff`, `find-ax`,
   `win list`, `pos`, `under` and `clipboard get` still really read the screen/tree while dry.
+
+## Cost model — when *not* to automate
+
+GUI driving is the right tool for triggering, reading and confirming; it is a poor tool for
+**graphical editing**. Measured on a real LabVIEW repair session (roughly 60 tool calls, of which
+fewer than a third advanced the task):
+
+| Task | Verdict |
+|---|---|
+| Launch an app, open a file, press shortcuts, read a dialog, confirm a result | ✅ cheap and reliable |
+| Click buttons, toggle checkboxes, pick list rows | ✅ fine once the app is foreground |
+| Menus, especially nested ones | ⚠️ use `menu`; hand-rolled hover+click loses the menu |
+| Small icon-only targets found by OCR | ⚠️ needs full-resolution crops + `under` to corroborate |
+| Diagram/graphics editing (drag to wire, resize handles, canvas tools) | ❌ prefer a file/CLI/API path, or hand it to the human |
+
+Before automating a GUI step, ask whether the same fact is available offline. Decompressing a
+file, diffing two versions, or counting strings took seconds and settled a question that had cost
+many GUI round-trips; the GUI was only needed to *confirm* it. When a GUI action is unavoidable
+but fiddly, do **one** verified step at a time and keep a screenshot trail — and never leave a
+half-finished edit unsaved in an app you cannot fully control.
 
 ## Known limitations
 

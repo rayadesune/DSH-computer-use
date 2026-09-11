@@ -692,6 +692,36 @@ public class DshImg
     }
 
     public static bool SameSize(Bitmap a, Bitmap b) { return a.Width == b.Width && a.Height == b.Height; }
+
+    // 找弹出菜单的"高亮行"：返回该横条中心的 y（找不到返回 -1）。
+    // Windows 菜单高亮是一条饱和强调色横条；这里用"明显偏蓝"的宽容判据，兼容不同主题色。
+    public static int HighlightRow(Bitmap bmp, int x0, int y0, int x1, int y1)
+    {
+        int stride;
+        byte[] buf = Bytes(bmp, out stride);
+        if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
+        if (x1 > bmp.Width) x1 = bmp.Width; if (y1 > bmp.Height) y1 = bmp.Height;
+        int w = Math.Max(1, x1 - x0);
+        int minCount = Math.Max(6, w * 3 / 5);
+        int best = -1, bestCount = 0;
+        var counts = new int[Math.Max(1, y1 - y0)];
+        for (int y = y0; y < y1; y++) {
+            int cnt = 0;
+            for (int x = x0; x < x1; x++) {
+                int i = y * stride + x * 4;
+                int b = buf[i], g = buf[i + 1], r = buf[i + 2];
+                if (b > 140 && b - r > 50 && b - g > 25) cnt++;
+            }
+            counts[y - y0] = cnt;
+            if (cnt > bestCount) { bestCount = cnt; best = y; }
+        }
+        if (best < 0 || bestCount < minCount) return -1;
+        int lo = best, hi = best;
+        int half = bestCount / 2;
+        while (lo - 1 >= y0 && counts[(lo - 1) - y0] >= half) lo--;
+        while (hi + 1 < y1 && counts[(hi + 1) - y0] >= half) hi++;
+        return (lo + hi) / 2;
+    }
 }
 '@
 
@@ -1274,24 +1304,36 @@ function Assert-PointAllowed {
 # 点击前把落点所属窗口提到前台：Windows 下点击本来也会激活，但焦点切换是异步的，
 # 紧接着投递的按键/拖拽可能落到旧的前台窗口上 —— 与 macOS 版的动机一致。
 function Ensure-FrontmostForClick {
-  param([int]$X, [int]$Y)
+  # 返回 $true = 目标窗口已在前台、可以点；$false = 不是前台，这一击会被别的窗口吃掉。
+  # 旧版本只警告一次就照样点，实测在会被抢焦点的应用（LabVIEW / 浏览器 / 带模态框的程序）上
+  # 会静默丢点击：命令返回 ok，实际什么都没点到。
+  param([int]$X, [int]$Y, [int]$Retries = 3, [switch]$NoActivate)
   $owner = Get-WindowAtPoint -X $X -Y $Y
-  if ($null -eq $owner) { return }
-  if ([DshWin]::GetForegroundWindow() -eq $owner.Hwnd) { return }
+  if ($null -eq $owner) { return $true }
+  if ([DshWin]::GetForegroundWindow() -eq $owner.Hwnd) { return $true }
   $name = $owner.App
-  [void][DshWin]::ForceForeground($owner.Hwnd)
-  $deadline = (Get-Date).AddMilliseconds(500)
-  while ((Get-Date) -lt $deadline) {
-    if ([DshWin]::GetForegroundWindow() -eq $owner.Hwnd) { break }
-    Start-Sleep -Milliseconds 25
+  if ($NoActivate) {
+    Set-Note ("目标 App「$name」不是前台窗口，且指定了 --no-activate（不激活）")
+    return $false
   }
-  if ([DshWin]::GetForegroundWindow() -eq $owner.Hwnd) {
-    $t = "提示: 目标 App「$name」先前不在前台，已先激活再点击"
-  } else {
-    $t = "警告: 目标 App「$name」未能成为前台（可能被其他窗口抢占），本次点击可能只用于激活窗口"
+  for ($attempt = 1; $attempt -le [Math]::Max(1, $Retries); $attempt++) {
+    [void][DshWin]::ForceForeground($owner.Hwnd)
+    $deadline = (Get-Date).AddMilliseconds(600)
+    while ((Get-Date) -lt $deadline) {
+      if ([DshWin]::GetForegroundWindow() -eq $owner.Hwnd) { break }
+      Start-Sleep -Milliseconds 25
+    }
+    if ([DshWin]::GetForegroundWindow() -eq $owner.Hwnd) {
+      $t = "提示: 目标 App「$name」先前不在前台，已先激活再点击（第 $attempt 次尝试）"
+      Write-Out ("  " + $t)
+      Set-Note $t
+      return $true
+    }
+    Start-Sleep -Milliseconds 120
   }
-  Write-Out ("  " + $t)
+  $t = "目标 App「$name」未能成为前台（已重试 $Retries 次）—— 此时点击会落到别的窗口上。可加 --anyway 强制点击，或先把该窗口切到前台。"
   Set-Note $t
+  return $false
 }
 
 # 拖拽起手点贴窗口边缘时告警：Windows 上贴边拖拽会把窗口拖走/缩放
@@ -1354,10 +1396,12 @@ function Invoke-ClickCommand {
   }
   $hold = Get-HoldDefault -Cmd $Cmd
   $autoActivate = $true
+  $anyway = $false
   $i = 2
   while ($i -lt $Rest.Count) {
     $a = $Rest[$i]
     if ($a -ceq '--no-activate') { $autoActivate = $false; $i++; continue }
+    if ($a -ceq '--anyway') { $anyway = $true; $i++; continue }
     $n = 0
     if ([int]::TryParse($a, [ref]$n)) { $hold = $n; $i++; continue }
     Fail-Usage ("未知选项: " + $a)
@@ -1365,11 +1409,17 @@ function Invoke-ClickCommand {
   if ($script:Dry) {
     $s = "dry: would $Cmd ($x,$y) hold=${hold}ms"
     if (-not $autoActivate) { $s += ' no-activate' }
+    if ($anyway) { $s += ' anyway' }
     Write-Out $s
     return 0
   }
   Assert-PointAllowed -X $x -Y $y -Where $Cmd
-  if ($autoActivate -and $Cmd -ne 'rclick') { Ensure-FrontmostForClick -X $x -Y $y }
+  # 所有点击（含 rclick）都要先确认目标在前台：rclick 以前跳过这一步，导致右键菜单经常根本没弹出来。
+  $front = Ensure-FrontmostForClick -X $x -Y $y -NoActivate:(-not $autoActivate)
+  if (-not $front -and -not $anyway) {
+    Write-ErrLine ("未点击：$Cmd ($x,$y) 的目标窗口不是前台窗口，点击会被别的窗口吃掉。加 --anyway 可强制点击。")
+    return 1
+  }
   [DshWin]::MouseMove($x, $y)
   switch ($Cmd) {
     'rclick' {
@@ -2355,6 +2405,224 @@ function Invoke-FindTextCommand {
 }
 
 # --------------------------------------------------------- wait-for ----
+# =========================================================== 弹出菜单 ====
+# 右键菜单是**独立弹出窗口**：不在 UIA 树里，OCR 对中文也不稳，而"点菜单项"又常被前台抢占吃掉。
+# 这里统一改成**键盘导航**：右键 → OCR 出菜单项 → 按目标项序号按 Down → 用高亮条自检纠偏
+# → 非末级按 Right 进子菜单 → 最后 Enter。全程不依赖精确点击菜单项。
+function Get-MenuRegion {
+  param([int]$X, [int]$Y, [int]$PadLeft = 40, [int]$Width = 1000, [int]$UpHeight = 700, [int]$DownHeight = 880)
+  # 菜单可能向下弹（窗口内右键），也可能向上弹（任务栏右键）—— 上下都要覆盖。
+  $disp = Get-DisplayForPoint -X $X -Y $Y
+  if ($null -eq $disp) { $disp = Get-Display -Index 1 }
+  if ($null -eq $disp) { return [pscustomobject]@{ X = $X; Y = $Y; W = $Width; H = $DownHeight } }
+  $left = [Math]::Max([int]$disp.Left, $X - $PadLeft)
+  $top = [Math]::Max([int]$disp.Top, $Y - $UpHeight)
+  $right = [Math]::Min([int]$disp.Left + [int]$disp.Width, $X + $Width)
+  $bottom = [Math]::Min([int]$disp.Top + [int]$disp.Height, $Y + $DownHeight)
+  return [pscustomobject]@{ X = $left; Y = $top; W = [Math]::Max(80, $right - $left); H = [Math]::Max(80, $bottom - $top) }
+}
+
+function Get-PopupRectByClass {
+  # Windows 的弹出菜单类名固定是 #32768；按类名找最省事，且对"向上弹出"的菜单也成立。
+  try {
+    foreach ($raw in [DshWin]::RawWindows($true)) {
+      if ([string]$raw.Class -ne '#32768') { continue }
+      $w = [int]($raw.Right - $raw.Left); $h = [int]($raw.Bottom - $raw.Top)
+      if ($w -ge 40 -and $h -ge 30) {
+        return [pscustomobject]@{ X = [int]$raw.Left; Y = [int]$raw.Top; W = $w; H = $h }
+      }
+    }
+  } catch { }
+  return $null
+}
+
+function Get-PopupRect {
+  # 弹出菜单是独立顶层窗口：右键后取落点所属窗口的矩形，就能把"菜单外的文字"过滤掉
+  # （否则 OCR 会把浏览器页面、任务栏上的字也当成菜单项，Down 次数全乱）。
+  param([int]$X, [int]$Y)
+  $w = Get-WindowAtPoint -X $X -Y $Y
+  if ($null -eq $w) { return $null }
+  $r = $w.Rect
+  if ($null -eq $r -or @($r).Count -lt 4) { return $null }
+  $rw = [int]$r[2]; $rh = [int]$r[3]
+  if ($rw -lt 40 -or $rh -lt 30) { return $null }
+  return [pscustomobject]@{ X = [int]$r[0]; Y = [int]$r[1]; W = $rw; H = $rh }
+}
+
+# 中文 OCR 会在字间插空格（"返回" → "派 回"），匹配前一律去掉空白
+function Remove-OcrSpaces {
+  param([string]$Text)
+  if ($null -eq $Text) { return '' }
+  return ($Text -replace '\s', '')
+}
+
+function Get-MenuItems {
+  param([int]$X, [int]$Y, [int]$MinX = -2147483648, $Rect = $null)
+  $reg = $Rect
+  if ($null -eq $reg) { $reg = Get-MenuRegion -X $X -Y $Y }
+  $ctx = New-CaptureContext -Rect $reg
+  $path = $null
+  try { $path = Save-CaptureToTemp -Ctx $ctx } catch { return @() }
+  $lines = @(Get-OcrLines -Path $path)
+  $items = @()
+  foreach ($ln in $lines) {
+    $txt = ([string]$ln.text).Trim()
+    if ($txt.Length -lt 1) { continue }
+    $gx = $ctx.OriginX + [double]$ln.x + [double]$ln.w / 2
+    $gy = $ctx.OriginY + [double]$ln.y + [double]$ln.h / 2
+    if ($gx -lt $MinX) { continue }
+    $items += [pscustomobject]@{ Text = $txt; X = (To-Int $gx); Y = (To-Int $gy) }
+  }
+  return @($items | Sort-Object Y, X)
+}
+
+# 返回高亮横条中心的全局 y（识别不到返回 $null）
+function Get-MenuHighlight {
+  param([int]$X, [int]$Y)
+  $reg = Get-MenuRegion -X $X -Y $Y
+  try {
+    Initialize-Image
+    $bmp = New-Capture -X $reg.X -Y $reg.Y -W $reg.W -H $reg.H
+    $row = -1
+    try { $row = [DshImg]::HighlightRow($bmp, 0, 0, $bmp.Width, $bmp.Height) } catch { $row = -1 }
+    $bmp.Dispose()
+    if ($row -lt 0) { return $null }
+    return [int]($reg.Y + $row)
+  } catch { return $null }
+}
+
+function Send-MenuKey {
+  param([string]$KeyName)
+  if ($script:Dry) { Write-Out ("dry: would press " + $KeyName); return }
+  Invoke-KeyCommand -Rest @($KeyName) | Out-Null
+  Start-Sleep -Milliseconds 90
+}
+
+function Invoke-MenuCommand {
+  param([string[]]$Rest)
+  $list = $false; $x = 0; $y = 0; $path = $null
+  $i = 0
+  while ($i -lt $Rest.Count) {
+    $a = $Rest[$i]
+    if ($a -ceq '--list') { $list = $true; $i++; continue }
+    if ($a -ceq '--close') { Send-MenuKey 'esc'; Send-MenuKey 'esc'; Write-Out 'ok 已按 Esc 关闭菜单'; return 0 }
+    if ($a -ceq '--dry') { $script:Dry = $true; $i++; continue }
+    if ($x -eq 0 -and $y -eq 0) {
+      if ($i + 1 -lt $Rest.Count) {
+        $tx = 0; $ty = 0
+        if ([int]::TryParse($Rest[$i], [ref]$tx) -and [int]::TryParse($Rest[$i + 1], [ref]$ty)) {
+          $x = $tx; $y = $ty; $i += 2; continue
+        }
+      }
+    }
+    if ($null -eq $path) { $path = $a; $i++; continue }
+    Fail-Usage ("未知参数: " + $a)
+  }
+  if ($x -eq 0 -and $y -eq 0) { Fail-Usage 'menu X Y "项1/项2" | menu --list X Y | menu --close' }
+
+  # 三级定位弹窗：① 点击前后"落点所属窗口"变了 → 新窗口就是菜单；
+  # ② 否 → 用点击前后的像素差异框出弹窗（向上弹也成立）；③ 否 → 按窗口类 #32768 找；
+  # ④ 都不行才退回"区域 OCR"（会混入菜单外文字，此时建议先 menu --list 核对）。
+  $winBefore = Get-WindowAtPoint -X $x -Y $y
+  $reg0 = Get-MenuRegion -X $x -Y $y
+  $shotBefore = $null
+  try { Initialize-Image; $shotBefore = New-Capture -X $reg0.X -Y $reg0.Y -W $reg0.W -H $reg0.H } catch { $shotBefore = $null }
+  $rc = Invoke-ClickCommand -Cmd 'rclick' -Rest @([string]$x, [string]$y)
+  if ($rc -ne 0) { if ($shotBefore) { $shotBefore.Dispose() }; return $rc }
+  Start-Sleep -Milliseconds 500
+  $pop = $null
+  $winAfter = Get-WindowAtPoint -X $x -Y $y
+  if ($null -ne $winBefore -and $null -ne $winAfter -and $winAfter.Hwnd -ne $winBefore.Hwnd) {
+    $r = $winAfter.Rect
+    if ($null -ne $r -and @($r).Count -ge 4 -and [int]$r[2] -ge 40 -and [int]$r[3] -ge 30) {
+      $pop = [pscustomobject]@{ X = [int]$r[0]; Y = [int]$r[1]; W = [int]$r[2]; H = [int]$r[3]; How = '窗口' }
+    }
+  }
+  if ($null -eq $pop -and $shotBefore) {
+    try {
+      $shotAfter = New-Capture -X $reg0.X -Y $reg0.Y -W $reg0.W -H $reg0.H
+      $d = [DshImg]::Diff($shotBefore, $shotAfter, 24, 0, 0, $reg0.W, $reg0.H)
+      $shotAfter.Dispose()
+      if ($d.Changed -gt 400 -and $d.MaxX -ge $d.MinX -and $d.MaxY -ge $d.MinY) {
+        $pad = 12
+        $bx = [Math]::Max(0, $d.MinX - $pad); $by = [Math]::Max(0, $d.MinY - $pad)
+        $bw = [Math]::Min($reg0.W - $bx, ($d.MaxX - $d.MinX) + 2 * $pad)
+        $bh = [Math]::Min($reg0.H - $by, ($d.MaxY - $d.MinY) + 2 * $pad)
+        if ($bw -ge 60 -and $bh -ge 40) { $pop = [pscustomobject]@{ X = $reg0.X + $bx; Y = $reg0.Y + $by; W = $bw; H = $bh; How = '差异' } }
+      }
+    } catch { $pop = $null }
+  }
+  if ($shotBefore) { $shotBefore.Dispose() }
+  if ($null -eq $pop) { $pop = Get-PopupRectByClass }
+  if ($null -ne $pop) {
+    $how = '区域'
+    if ($pop.PSObject.Properties.Name -contains 'How') { $how = $pop.How }
+    Write-Out ("  菜单窗口[{0}]: ({1},{2}) {3}x{4}" -f $how, $pop.X, $pop.Y, $pop.W, $pop.H)
+  } else {
+    Write-Out '  提示: 定位不到菜单窗口，改用区域 OCR（可能混入菜单外文字；可先用 menu --list 核对）'
+  }
+
+  $items = @(Get-MenuItems -X $x -Y $y -Rect $pop)
+  if ($items.Count -eq 0) {
+    Write-ErrLine '没有识别到任何菜单项（菜单可能没弹出来，或目标窗口不是前台）'
+    Send-MenuKey 'esc'
+    return 1
+  }
+
+  if ($list -or [string]::IsNullOrWhiteSpace($path)) {
+    Write-Out ("ok 菜单项 {0} 个（每项前是 Down 次数）：" -f $items.Count)
+    for ($k = 0; $k -lt $items.Count; $k++) {
+      Write-Out ("  [{0}] `"{1}`" -> {2} {3}" -f ($k + 1), $items[$k].Text, $items[$k].X, $items[$k].Y)
+    }
+    Send-MenuKey 'esc'
+    return 0
+  }
+
+  $segs = @($path -split '/' | Where-Object { $_.Trim().Length -gt 0 })
+  for ($si = 0; $si -lt $segs.Count; $si++) {
+    $seg = $segs[$si].Trim()
+    $segNorm = Remove-OcrSpaces $seg
+    $hit = $null; $idx = 0
+    for ($k = 0; $k -lt $items.Count; $k++) {
+      if ((Remove-OcrSpaces $items[$k].Text).Contains($segNorm)) { $hit = $items[$k]; $idx = $k + 1; break }
+    }
+    if ($null -eq $hit) {
+      Write-ErrLine ("菜单里找不到「{0}」。当前识别到：" -f $seg)
+      foreach ($it in $items) { Write-ErrLine ("  - " + $it.Text) }
+      Send-MenuKey 'esc'
+      return 1
+    }
+    for ($d = 0; $d -lt $idx; $d++) { Send-MenuKey 'down' }
+    $hl = Get-MenuHighlight -X $x -Y $y
+    $fix = 0
+    while ($null -ne $hl -and [Math]::Abs($hl - $hit.Y) -gt 10 -and $fix -lt 4) {
+      if ($hl -gt $hit.Y) { Send-MenuKey 'up' } else { Send-MenuKey 'down' }
+      $hl = Get-MenuHighlight -X $x -Y $y
+      $fix++
+    }
+    if ($null -eq $hl) {
+      Write-Out ("  选中「{0}」（Down×{1}；高亮自检不可用）" -f $hit.Text, $idx)
+    } else {
+      Write-Out ("  选中「{0}」（Down×{1}；高亮 y={2} / 目标 y={3}；纠偏 {4} 次）" -f $hit.Text, $idx, $hl, $hit.Y, $fix)
+    }
+    if ($si -lt $segs.Count - 1) {
+      Send-MenuKey 'right'
+      Start-Sleep -Milliseconds 400
+      $items = @(Get-MenuItems -X $x -Y $y -Rect $pop)
+      $sub = @($items | Where-Object { $_.X -gt ($hit.X + 20) })
+      if ($sub.Count -eq 0) {
+        Write-ErrLine '子菜单没识别到内容；已按 Esc 退出'
+        Send-MenuKey 'esc'
+        return 1
+      }
+      $items = $sub
+    }
+  }
+  Send-MenuKey 'enter'
+  Write-Out ("ok 已选择：" + ($segs -join ' / '))
+  return 0
+}
+
 function Invoke-WaitForCommand {
   param([string[]]$Rest)
   $text = $null; $stable = $false; $changePath = $null
@@ -2569,6 +2837,11 @@ dsh-ui (Windows) — 给 agent 用的桌面操作原语（macOS 版 dsh-ui.swift
   find-ax   "文字" [--app 名称] [--pid N] [--all] [--json] [--max N] [--click]
   win    list [--json] | focus N | maximize N | fullscreen N | move N X Y [W H] | close N | minimize N | restore N
 
+弹出菜单（右键菜单是独立窗口，用方向键导航，不靠点击子项）
+  menu   --list X Y                   右键后列出识别到的菜单项（[序号] 文本 -> 屏幕坐标）
+  menu   X Y "项1/项2"                右键 → 按名称逐级导航（Down 选中、Right 进子菜单、Enter 确认）
+  menu   --close                      按两次 Esc 关掉残留菜单
+
 验证
   wait-for --text "文字" [--timeout 20] [--interval 0.6]
   wait-for --stable [--timeout 20]
@@ -2583,7 +2856,9 @@ dsh-ui (Windows) — 给 agent 用的桌面操作原语（macOS 版 dsh-ui.swift
   --dry  <任意命令>                   干跑：只打印动作，不执行
 
 退出码: 0 成功 / 1 未命中或超时 / 2 用法错误 / 3 被拦截名单拒绝
-注意: type / keys / key 与滚轮 scroll 成功时不打印任何内容（与 macOS 版一致）。
+注意: click/tap/press/dclick/rclick 现在会**先确认目标窗口在前台**（最多重试 3 次）；
+      仍不在前台时**不点击**并返回 1 —— 需要"就算抢不到前台也点"时加 --anyway。
+      type / keys / key 与滚轮 scroll 成功时不打印任何内容（与 macOS 版一致）。
 '@
 
 # ========================================================== 分发层 ====
@@ -2625,6 +2900,7 @@ function Invoke-Dispatch {
     'batch' { return (Invoke-BatchCommand -Rest $rest) }
     'guard' { return (Invoke-GuardCommand) }
     'under' { return (Invoke-UnderCommand -Rest $rest) }
+    'menu' { return (Invoke-MenuCommand -Rest $rest) }
     default {
       Write-ErrLine ("未知命令: " + $Tokens[0])
       Write-Out $script:HelpText

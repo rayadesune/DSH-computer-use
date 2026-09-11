@@ -94,21 +94,31 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -WithSkill -Sk
 
 ```powershell
 dsh-ui move   X Y
-dsh-ui click  X Y [MS] [--no-activate]   # 左键单击（默认 30ms）
-                                         # 落点窗口不在前台时先激活再点击（--no-activate 关闭）
+dsh-ui click  X Y [MS] [--no-activate] [--anyway]   # 左键单击（默认 30ms）
 dsh-ui tap    X Y [MS]                   # 轻点（默认 60ms）
 dsh-ui press  X Y [MS]                   # 长按（默认 800ms）
 dsh-ui dclick X Y                        # 左键双击
-dsh-ui rclick X Y                        # 右键单击
+dsh-ui rclick X Y [--anyway]             # 右键单击
 dsh-ui drag   X1 Y1 X2 Y2 [--ms N] [--steps N] [--hold N] [--settle N]
                           [--momentum F] [--edge-guard N]
 dsh-ui scroll N [--drag] [--px-per-notch N]
 dsh-ui type   TEXT                       # KEYEVENTF_UNICODE：中文/emoji 都能打，绕过输入法
 dsh-ui keys   TEXT                       # ASCII 逐字符发真实键码（大写/符号自动带 shift）
-dsh-ui key    KEY                        # 按键，如 key ctrl+shift+s / key enter / key win+r
+dsh-ui key    KEY                        # 按键，如 key ctrl+shift+s / key enter / key down
 dsh-ui pos                               # 打印光标位置
+
+# 弹出菜单：右键菜单是独立窗口，用方向键导航，不点菜单项
+dsh-ui menu   --list X Y                 # 右键后列出识别到的菜单项（[序号] 文本 -> 屏幕坐标）
+dsh-ui menu   X Y "项1/项2"               # 右键 → Down 选中 → Right 进子菜单 → Enter 确认
+dsh-ui menu   --close                    # 按两次 Esc 清掉残留菜单
 ```
 
+- **点击的前台契约**：`click` / `tap` / `press` / `dclick` / `rclick` 一律先确认落点窗口
+  已成为前台，最多重试 3 次激活；仍不是前台时**不发送点击**并返回退出码 `1`。
+  `--anyway` 强制点击（很少需要），`--no-activate` 只校验、不激活。
+  这条在会被抢焦点的应用（浏览器、聊天工具、带模态框的程序）上是必需的：旧行为会
+  静默把点击丢给别的窗口，命令却返回成功。`rclick` 以前**跳过**了这一步，是右键菜单
+  "莫名其妙不弹出来"的主因。
 - 坐标一律是**全局左上物理像素**，与截图、UIA 完全同一套口径。
 - `type` 与 `keys` 的区别：`type` 走 Unicode 载荷，任何字符都行（含中文、emoji）；
   `keys` 走真实虚拟键码（`VkKeyScan` 按当前键盘布局解析），只支持布局产得出的字符，
@@ -116,6 +126,9 @@ dsh-ui pos                               # 打印光标位置
   `dsh-ui --dry keys "Ab-1!"` 会逐字符打印映射，不真的敲键盘。
 - `key` 的修饰键：`ctrl`/`control`/`cmd`/`command` → Ctrl（mac 习惯直接可用）、
   `shift`、`alt`/`option`、`win`/`windows`/`meta`/`super` → Win。
+- `key` 的命名键含方向键与功能键：`left/up/right/down`、`home/end/pageup/pagedown`、
+  `enter/tab/space/esc/backspace/delete/insert`、`f1..f24`、`numpad0-9` 等 —— 菜单、
+  列表、表格里优先用键盘而不是点击。
 - `scroll` 正数 = 向下滚（内容上移）。Windows 滚轮事件以 120 为单位（≈一行），
   像素→档位按 `--px-per-notch`（默认 100px/档）折算，分批发事件；`--drag` 改用拖拽模拟。
 
