@@ -820,20 +820,31 @@ function Add-CursorMark {
   $cx = $c[0] - $OffsetX; $cy = $c[1] - $OffsetY
   if ($cx -lt 0 -or $cy -lt 0 -or $cx -ge $Bmp.Width -or $cy -ge $Bmp.Height) { return }
   $g = [System.Drawing.Graphics]::FromImage($Bmp)
+  $pen = $null
   try {
     $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::None
-    $pts = @(
-      (New-Object System.Drawing.Point($cx, $cy)),
-      (New-Object System.Drawing.Point($cx, ($cy + 17))),
-      (New-Object System.Drawing.Point($cx + 4, ($cy + 13))),
-      (New-Object System.Drawing.Point($cx + 7, ($cy + 19))),
-      (New-Object System.Drawing.Point($cx + 10, ($cy + 17))),
-      (New-Object System.Drawing.Point($cx + 7, ($cy + 11))),
-      (New-Object System.Drawing.Point($cx + 12, ($cy + 11)))
-    )
+    # 这段箭头有两个坑，都属于"只在某个宿主上炸"，两个宿主都跑才看得出来：
+    #  1) 用 @( (New-Object Point($cx, $cy)), (New-Object Point($cx + 4, $cy)) ) 这种数组字面量时，
+    #     第二个元素里未加括号的 `$cx + 4` 会被当成**数组加法**，报
+    #     "System.Object[] does not contain a method named 'op_Addition'"。
+    #  2) 点数数组必须是**强类型 Point[]**：PowerShell 7（.NET 10）不会把 Object[] 绑到 Point[]
+    #     形参上，报的还是一句看不懂的话（"无法将参数 points 转换为 System.Object[]，其值为 DrawPolygon"）；
+    #     Windows PowerShell 5.1（.NET Framework）却能自动转换，所以只测 5.1 会漏掉。
+    $pts = New-Object 'System.Drawing.Point[]' 7
+    $pts[0] = [System.Drawing.Point]::new($cx, $cy)
+    $pts[1] = [System.Drawing.Point]::new($cx, ($cy + 17))
+    $pts[2] = [System.Drawing.Point]::new(($cx + 4), ($cy + 13))
+    $pts[3] = [System.Drawing.Point]::new(($cx + 7), ($cy + 19))
+    $pts[4] = [System.Drawing.Point]::new(($cx + 10), ($cy + 17))
+    $pts[5] = [System.Drawing.Point]::new(($cx + 7), ($cy + 11))
+    $pts[6] = [System.Drawing.Point]::new(($cx + 12), ($cy + 11))
     $g.FillPolygon([System.Drawing.Brushes]::White, $pts)
-    $g.DrawPolygon((New-Object System.Drawing.Pen([System.Drawing.Color]::Black, 1)), $pts)
-  } finally { $g.Dispose() }
+    $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::Black, 1)
+    $g.DrawPolygon($pen, $pts)
+  } finally {
+    if ($pen) { $pen.Dispose() }
+    $g.Dispose()
+  }
 }
 
 function Get-ShotPath {
@@ -934,7 +945,7 @@ function Add-GridOverlay {
 function Invoke-DisplaysCommand {
   param([string[]]$Rest)
   $json = $false
-  foreach ($a in $Rest) { if ($a -eq '--json') { $json = $true } elseif ($a -ne '') { Fail-Usage "displays 不接受参数：$a" } }
+  foreach ($a in $Rest) { if ($a -ceq '--json') { $json = $true } elseif ($a -ne '') { Fail-Usage "displays 不接受参数：$a" } }
   $disps = Get-DisplayList
   if ($json) {
     $arr = @()
@@ -970,7 +981,7 @@ function Invoke-ShotCommand {
   $i = 0
   while ($i -lt $Rest.Count) {
     $a = $Rest[$i]
-    switch ($a) {
+    switch -CaseSensitive ($a) {
       '-D' {
         if ($i + 1 -ge $Rest.Count) { Fail-Usage 'shot -D N' }
         $n = 0; if (-not [int]::TryParse($Rest[$i + 1], [ref]$n)) { Fail-Usage 'shot -D N' }
@@ -1146,7 +1157,7 @@ function Invoke-DiffCommand {
   $i = 2
   while ($i -lt $Rest.Count) {
     $a = $Rest[$i]
-    switch ($a) {
+    switch -CaseSensitive ($a) {
       '--threshold' {
         if ($i + 1 -ge $Rest.Count) { Fail-Usage '--threshold N' }
         $n = 0; if (-not [int]::TryParse($Rest[$i + 1], [ref]$n)) { Fail-Usage '--threshold N' }
@@ -1346,7 +1357,7 @@ function Invoke-ClickCommand {
   $i = 2
   while ($i -lt $Rest.Count) {
     $a = $Rest[$i]
-    if ($a -eq '--no-activate') { $autoActivate = $false; $i++; continue }
+    if ($a -ceq '--no-activate') { $autoActivate = $false; $i++; continue }
     $n = 0
     if ([int]::TryParse($a, [ref]$n)) { $hold = $n; $i++; continue }
     Fail-Usage ("未知选项: " + $a)
@@ -1399,7 +1410,7 @@ function Invoke-DragCommand {
     if (-not [double]::TryParse($Rest[$i + 1], [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$v)) {
       Fail-Usage ("$a 需要一个数值")
     }
-    switch ($a) {
+    switch -CaseSensitive ($a) {
       '--ms' { $moveMS = $v }
       '--steps' { $steps = [int]$v }
       '--hold' { $holdMS = [int]$v }
@@ -1447,8 +1458,8 @@ function Invoke-ScrollCommand {
   $i = 1
   while ($i -lt $Rest.Count) {
     $a = $Rest[$i]
-    if ($a -eq '--drag') { $asDrag = $true; $i++; continue }
-    if ($a -eq '--px-per-notch') {
+    if ($a -ceq '--drag') { $asDrag = $true; $i++; continue }
+    if ($a -ceq '--px-per-notch') {
       if ($i + 1 -ge $Rest.Count) { Fail-Usage '--px-per-notch N' }
       $v = 0.0
       if (-not [double]::TryParse($Rest[$i + 1], [ref]$v) -or $v -le 0) { Fail-Usage '--px-per-notch N' }
@@ -1711,8 +1722,8 @@ function Invoke-WinCommand {
   $sub = $Rest[0]
   $json = $false
   $rest2 = @()
-  foreach ($a in $Rest) { if ($a -eq '--json') { $json = $true } else { $rest2 += $a } }
-  if ($sub -eq 'list') {
+  foreach ($a in $Rest) { if ($a -ceq '--json') { $json = $true } else { $rest2 += $a } }
+  if ($sub -ceq 'list') {
     $ws = @(Get-WindowList)
     if ($json) {
       $arr = @()
@@ -1746,7 +1757,7 @@ function Invoke-WinCommand {
     return 0
   }
 
-  switch ($sub) {
+  switch -CaseSensitive ($sub) {
     'focus' {
       [void][DshWin]::ForceForeground($w.Hwnd)
       $deadline = (Get-Date).AddMilliseconds(700)
@@ -1906,7 +1917,7 @@ function Invoke-FindAxCommand {
   $appFilter = $null; $pidFilter = $null; $all = $false; $json = $false; $maxHits = 20; $click = $false
   $i = 1
   while ($i -lt $Rest.Count) {
-    switch ($Rest[$i]) {
+    switch -CaseSensitive ($Rest[$i]) {
       '--app' { if ($i + 1 -ge $Rest.Count) { Fail-Usage '--app 需要一个值' }; $appFilter = $Rest[$i + 1].ToLowerInvariant(); $i += 2; continue }
       '--pid' { if ($i + 1 -ge $Rest.Count) { Fail-Usage '--pid 需要一个值' }; $n = 0; if (-not [int]::TryParse($Rest[$i + 1], [ref]$n)) { Fail-Usage '--pid 需要一个值' }; $pidFilter = $n; $i += 2; continue }
       '--max' { if ($i + 1 -ge $Rest.Count) { Fail-Usage '--max 需要一个值' }; $n = 0; if (-not [int]::TryParse($Rest[$i + 1], [ref]$n)) { Fail-Usage '--max 需要一个值' }; $maxHits = $n; $i += 2; continue }
@@ -2222,7 +2233,7 @@ function Invoke-FindTextCommand {
   $display = $null; $rect = $null; $lang = $null
   $i = 1
   while ($i -lt $Rest.Count) {
-    switch ($Rest[$i]) {
+    switch -CaseSensitive ($Rest[$i]) {
       '--all' { $all = $true; $i++; continue }
       '--fast' { $fast = $true; $i++; continue }
       '--click' { $click = $true; $i++; continue }
@@ -2351,7 +2362,7 @@ function Invoke-WaitForCommand {
   $display = $null; $rect = $null
   $i = 0
   while ($i -lt $Rest.Count) {
-    switch ($Rest[$i]) {
+    switch -CaseSensitive ($Rest[$i]) {
       '--text' { if ($i + 1 -ge $Rest.Count) { Fail-Usage '--text 需要一个值' }; $text = $Rest[$i + 1]; $i += 2; continue }
       '--change' { if ($i + 1 -ge $Rest.Count) { Fail-Usage '--change 需要一个路径' }; $changePath = Expand-Path $Rest[$i + 1]; $i += 2; continue }
       '--stable' { $stable = $true; $i++; continue }
@@ -2442,14 +2453,14 @@ function Invoke-ClipboardCommand {
   param([string[]]$Rest)
   if ($Rest.Count -lt 1) { Fail-Usage 'clipboard get | set TEXT' }
   $sub = $Rest[0]
-  if ($sub -eq 'get') {
+  if ($sub -ceq 'get') {
     $t = ''
     try { $t = [string](Get-Clipboard -Raw -ErrorAction Stop) } catch { try { $t = [string](Get-Clipboard) } catch { $t = '' } }
     if ($null -eq $t) { $t = '' }
     Write-Out $t.TrimEnd("`r", "`n")
     return 0
   }
-  if ($sub -eq 'set') {
+  if ($sub -ceq 'set') {
     if ($Rest.Count -lt 2) { Fail-Usage 'clipboard set TEXT' }
     $text = ($Rest[1..($Rest.Count - 1)] -join ' ')
     if ($script:Dry) { Write-Out ("dry: would set clipboard ({0} 字符)" -f $text.Length); return 0 }
@@ -2629,7 +2640,7 @@ function Invoke-DshCommand {
   $tokens = @()
   $seen = $false
   foreach ($t in $Argv) {
-    if ($t -eq '--dry' -and -not $seen) { $seen = $true; $script:Dry = $true; continue }
+    if ($t -ceq '--dry' -and -not $seen) { $seen = $true; $script:Dry = $true; continue }
     $tokens += $t
   }
   $code = 0

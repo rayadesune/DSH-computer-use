@@ -49,7 +49,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\verify-windows.ps1 -Al
 
 ## 结果
 
-**44 项断言全部通过（FAIL 0 / SKIP 0）**，宿主覆盖 PowerShell 7 与 Windows PowerShell 5.1。
+**54 项断言全部通过（FAIL 0 / SKIP 0）**，宿主覆盖 PowerShell 7 与 Windows PowerShell 5.1。
 
 | 分组 | 覆盖的断言 |
 |---|---|
@@ -60,7 +60,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\verify-windows.ps1 -Al
 | E. 真实输入 | `click` 命中按钮、`--dry` 零副作用、`type` 中文+ASCII、`keys` 大小写与符号、`key ctrl+a`+`delete`、剪贴板粘贴、`drag` 位移、`scroll` 滚动列表、`find-ax --click`、`find-text --click`、拦截名单 exit=3 |
 | F. 批量 | `batch` 从 stdin 逐条执行、注释跳过、逐条审计、`-c` 语义 |
 | G. PS 5.1 宿主 | 同一批命令在 Windows PowerShell 5.1 下复跑（`--help`/`displays`/`pos`/`shot`/`diff`/`find-text`/`find-ax`/`win list`） |
-| H. 安装/启动器 | `install.ps1` 安装后可运行、副本仍可解析、`-Uninstall` 清理干净、启动器原样透传退出码、`dsh-ui.cmd` 保持纯 ASCII、默认只装可执行文件（`-WithDocs` 才带文档）、`-SkillCopy` 复制模式的内容与 frontmatter、`-WithSkill` 联接模式下改仓库即生效且卸载只摘链接不动源目录、本机已装 skill 的漂移检测 |
+| I1. 补齐未验证功能 | `scroll --drag` 契约、`--px-per-notch` 真的改变滚动量、`shot -c` 真的把图放进剪贴板、`shot -C` 画的差异集中在光标处、拦截名单也拦 `type/keys/key`、`find-text --all/--lang`、`drag --edge-guard` 告警开关、`win minimize/restore`、`win fullscreen` 铺满与还原 |
+| I2. `win close` | 关掉目标窗口后它从 `win list` 消失、进程退出（放在最后一步跑） || H. 安装/启动器 | `install.ps1` 安装后可运行、副本仍可解析、`-Uninstall` 清理干净、启动器原样透传退出码、`dsh-ui.cmd` 保持纯 ASCII、默认只装可执行文件（`-WithDocs` 才带文档）、`-SkillCopy` 复制模式的内容与 frontmatter、`-WithSkill` 联接模式下改仓库即生效且卸载只摘链接不动源目录、本机已装 skill 的漂移检测 |
 
 `--dry` 是逐条比对**输出文案**的（`dry: would drag (10,10) -> (200,200) settle=80 hold=80 move=300 steps=12 momentum=0` 这种整行匹配），
 再叠一层"预演 11 条动作后靶子的按钮计数 / 文本 / 拖拽标志 / 滚动位置 / 窗口位置 / 剪贴板全都没变"的副作用断言 ——
@@ -228,6 +229,27 @@ OCR 质量采样（同一屏，拉丁 vs 中文）：
     套件现在在这些用例前调用 `Focus-Target`（`win list --json` 找序号 → `win focus`），
     把"环境前提"变成测试自己负责的事，而不是假设靶子一直浮在最上面。
 
+23. **PowerShell 的 `switch` 默认**大小写不敏感**，`-C` 把 `-c` 吃掉了。**
+    `shot -c`（截图进剪贴板）和 `shot -C`（把光标画进图里）只差大小写，于是在 `switch ($a)`
+    里 `-c` 永远命中写在前面的 `-C` 分支 —— `shot -c` 完全失效，却一直"看起来正常"
+    （它老老实实截了图、打印了正常输出），直到为它补测试才发现。
+    现在所有 flag / 子命令的 switch 都改成 `switch -CaseSensitive`、常量比较用 `-ceq`，
+    与 macOS 版"短选项大小写敏感"的行为一致，从根上消灭这类撞车。
+
+24. **`shot -C` 在两个宿主上各挂一次，两次的原因还不一样**（这就是"必须两个宿主都跑"的价值）：
+    - 数组字面量里 `@( (New-Object Point($cx, $cy)), (New-Object Point($cx + 4, $cy)) )`：
+      第二个元素里未加括号的 `$cx + 4` 被当成**数组加法**，报
+      `System.Object[] does not contain a method named 'op_Addition'`；
+    - 改成先算变量后，**PowerShell 7（.NET 10）仍然拒绝把 `Object[]` 绑到 `Point[]` 形参**，
+      报一句看不懂的话（"无法将参数 points 转换为 System.Object[]，其值为 DrawPolygon"），
+      而 Windows PowerShell 5.1（.NET Framework）能自动转换 —— 只测 5.1 会完全漏掉。
+    最终写法：`New-Object 'System.Drawing.Point[]' 7` + `[System.Drawing.Point]::new(...)` 逐点赋值。
+    教训：跨 5.1/7 的 .NET 调用要**显式给强类型数组**，别指望绑定器帮你转。
+
+25. **测试自己太弱也会掩盖 bug。** 上面那两条 `shot` 最初写成
+    `[void](Invoke-Tool ...)`（丢掉退出码、不检查产物是否存在），失败时只表现为
+    `diff: 无法读取图片`，看不出是谁的错。改成逐条断言退出码 + 产物存在后，
+    工具的原始报错立刻浮出来，两次根因都是这样定位的。
 ## 未验证 / 已知缺口
 
 诚实列出，避免"全绿"被过度解读：

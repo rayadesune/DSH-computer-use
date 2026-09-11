@@ -314,11 +314,23 @@ dsh-ui diff before.png after.png
 
 ## 已验证场景（本机实测）
 
-完整记录见 [`VERIFICATION-WINDOWS.md`](VERIFICATION-WINDOWS.md)：44 项断言全绿，覆盖
-CLI 基线/退出码/审计、区域截图与网格像素、diff、wait-for 三种模式、OCR 与 UIA 定位精度、
-窗口 move/focus/maximize、真实点击（OCR 命中坐标与按钮中心误差 1px）、中文与 ASCII 输入、
-真实键码、`ctrl+a`/`delete`、剪贴板粘贴、拖拽落点、滚轮滚动、拦截名单 exit 3、batch 逐条审计，
-以及在 **Windows PowerShell 5.1** 宿主下的重复验证。
+完整记录见 [`VERIFICATION-WINDOWS.md`](VERIFICATION-WINDOWS.md)：54 项断言全绿，覆盖
+CLI 基线/退出码/审计、区域截图与网格像素、`shot -c`（截图真的进了剪贴板）、`shot -C`（光标差异
+正好落在光标处）、diff、wait-for 三种模式、OCR 与 UIA 定位精度、`find-text --all/--lang`、
+窗口 move/focus/maximize/**minimize/restore/fullscreen/close**、真实点击（OCR 命中坐标与按钮中心
+误差 1px）、中文与 ASCII 输入、真实键码、`ctrl+a`/`delete`、剪贴板粘贴、拖拽落点与 `--edge-guard`、
+滚轮滚动与 `--px-per-notch`、`scroll --drag` 契约、拦截名单（鼠标**与键盘**两条路径）exit 3、
+batch 逐条审计、安装/卸载/联接与全局 skill 漂移检测，以及在 **Windows PowerShell 5.1**
+宿主下的重复验证。
+
+## 选项大小写
+
+**短选项大小写敏感**：`shot -C`（把光标画进截图）与 `shot -c`（截图进剪贴板）是两件事；
+`-R X,Y,W,H`、`-D N`、`-o PATH` 同理必须用大写。命令名本身不区分大小写（`MOVE` 也能用），
+子命令与长选项按标准写法（`win list`、`--dry`、`--json`）。
+
+这条是踩出来的：早期实现用 PowerShell 的 `switch` 解析选项，而它**默认大小写不敏感**，
+于是 `-c` 永远命中写在前面的 `-C` 分支，`shot -c` 静默失效。
 
 ## 已知限制
 

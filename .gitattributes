@@ -1,0 +1,20 @@
+# Windows 脚本按 CRLF 检出：cmd.exe 对 LF-only 的 .cmd 在某些语法（标签/goto/多行块）上不可靠，
+# PowerShell 两边都能读，所以统一给 Windows 宿主用的文件 CRLF。
+*.cmd   text eol=crlf
+*.bat   text eol=crlf
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+
+# macOS / CI 侧保持 LF，避免整文件 diff 噪音
+*.swift text eol=lf
+*.sh    text eol=lf
+Makefile text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+
+# 图标与截图别做行尾转换
+*.png binary
+*.jpg binary
+*.icns binary
