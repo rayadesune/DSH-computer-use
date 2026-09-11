@@ -209,7 +209,9 @@ dsh-ui wait-for --change before.png --min-change 500
   search box.
 - **`win fullscreen` fills the monitor** (taskbar area included) — it is not a macOS-style
   native fullscreen space. A second call restores the work-area fit.
-- **Windows PowerShell 5.1 is ~2× faster than PowerShell 7** for this tool (in-process WinRT
+- **Short flags are case-sensitive**: `shot -C` composites the cursor into the image while
+  `shot -c` puts the image on the clipboard — `-c` is *not* accepted for the cursor flag.
+  Command names are case-insensitive (`MOVE` works), sub-commands are not.- **Windows PowerShell 5.1 is ~2× faster than PowerShell 7** for this tool (in-process WinRT
   OCR, faster start): `pos` 571 ms vs 1028 ms, `find-text` 941 ms vs 1798 ms. Both work.
 - **Keep the `.ps1` files UTF-8 with BOM.** Windows PowerShell 5.1 decodes BOM-less UTF-8 as
   the system ANSI code page; Chinese comments then swallow an adjacent brace and the script
@@ -220,7 +222,7 @@ dsh-ui wait-for --change before.png --min-change 500
 The repo ships `tests/verify-windows.ps1`, which drives a self-built WinForms target
 (`tests/ui-target.ps1`) and asserts against **state written by the target itself** — a click
 counts only if the button's own handler fired, typed text must match byte-for-byte, a drag
-must report the requested displacement. 44 assertions pass on PowerShell 7.6 and Windows
+must report the requested displacement. 54 assertions pass on PowerShell 7.6 and Windows
 PowerShell 5.1, covering: CLI baseline/exit codes/audit, region capture + grid pixels,
 `diff`, all three `wait-for` modes, OCR hit accuracy (button centre vs OCR click: 1 px),
 UIA search by pid and by title, `win move/focus/maximize`, real click, `--dry` with no side

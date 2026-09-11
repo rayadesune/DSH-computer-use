@@ -152,15 +152,24 @@ function Get-CtlRect {
 # 不做这一步，套件会因为"刚好有别的窗口盖住靶子"而随机失败（本机实测踩到过：
 # 截图里出现的是 DSH 自己的对话，OCR 自然找不到靶子上的标签）。
 function Focus-Target {
-  $r = Invoke-Tool -Command @('win', 'list', '--json') -Quiet
-  if ($r.Code -ne 0) { return }
-  $o = $r.Text | ConvertFrom-Json
-  $idx = 0; $want = 0
-  foreach ($w in $o.windows) { $idx++; if ($w.pid -eq $tpid -and $w.title -eq 'DSH UI Target') { $want = $idx } }
-  if ($want -gt 0) {
-    [void](Invoke-Tool -Command @('win', 'focus', "$want") -Quiet)
+  $idx = Get-TargetWindowIndex
+  if ($idx -gt 0) {
+    [void](Invoke-Tool -Command @('win', 'focus', "$idx") -Quiet)
     Start-Sleep -Milliseconds 350
   }
+}
+
+# 每次现查序号：win 的序号是每次调用重新枚举的，跨调用不稳定（命令自己的文档也这么写）
+function Get-TargetWindowIndex {
+  $r = Invoke-Tool -Command @('win', 'list', '--json') -Quiet
+  if ($r.Code -ne 0) { return 0 }
+  $o = $r.Text | ConvertFrom-Json
+  $idx = 0
+  foreach ($w in $o.windows) {
+    $idx++
+    if ($w.pid -eq $tpid -and $w.title -eq 'DSH UI Target') { return $idx }
+  }
+  return 0
 }
 
 # 从 find-ax --json 里取出某个控件
@@ -843,6 +852,199 @@ try {
       $a = (Get-FileHash $realSkill).Hash
       $b = (Get-FileHash (Join-Path $Root 'skill-win\SKILL.md')).Hash
       Assert ($a -eq $b) "全局 skill 与仓库副本不一致（仓库改了但没同步）。修复：install.ps1 -WithSkill（复制模式），或改用联接安装后即自动一致"
+    }
+  }
+
+  # ================================ I1. 补齐"已实现但没验证"的功能 ===
+  if ($SkipInput) {
+    Group 'I. 补齐未验证功能（已跳过）'
+    Skip 'I1/I2 全部' '-SkipInput'
+  } else {
+    Group 'I1. 已实现但此前没验证过的功能'
+    $listRect = Get-CtlRect 'ScrollList'
+
+    T 'scroll --drag 的契约：输出格式与终点夹取' {
+      $cx = [int]$listRect[0] + [int]($listRect[2] / 2); $cy = [int]$listRect[1] + [int]($listRect[3] / 2)
+      Click-Point -X $cx -Y $cy
+      Start-Sleep -Milliseconds 300
+      $r = Invoke-Tool -Command @('scroll', '200', '--drag') -Quiet
+      Assert ($r.Code -eq 0) "exit=$($r.Code)：$($r.Text)"
+      Assert-Match $r.Text 'ok 以拖拽模拟滚动 200px: \(\d+,\d+\) -> \(\d+,\d+\)' 'scroll --drag 输出'
+      # 注：靶子上没有"能靠拖拽滚动"的表面，所以这里只验证命令契约（输出与夹取），
+      # 不声称内容真的滚动了 —— 见 docs/VERIFICATION-WINDOWS.md 的已知缺口。
+    }
+
+    T 'scroll --px-per-notch 真的改变滚动量' {
+      $delta = [ordered]@{}
+      foreach ($ppn in @(100, 10000)) {
+        $cx = [int]$listRect[0] + [int]($listRect[2] / 2); $cy = [int]$listRect[1] + [int]($listRect[3] / 2)
+        Click-Point -X $cx -Y $cy
+        Start-Sleep -Milliseconds 250
+        [void](Invoke-Tool -Command @('key', 'home') -Quiet)      # 列表回到顶部（TopIndex=0）
+        Start-Sleep -Milliseconds 300
+        $before = [int](Get-TargetState).scrollY
+        $r = Invoke-Tool -Command @('scroll', '300', '--px-per-notch', "$ppn") -Quiet
+        Assert ($r.Code -eq 0) "px-per-notch=$ppn exit=$($r.Code)"
+        Start-Sleep -Milliseconds 500
+        $delta["$ppn"] = [int](Get-TargetState).scrollY - $before
+      }
+      Assert ($delta['10000'] -gt 0) "px-per-notch=10000 应该至少滚 1 档，实际 $($delta['10000'])"
+      Assert ($delta['100'] -gt $delta['10000']) "100px/档应比 10000px/档滚得多，实际 $($delta['100']) vs $($delta['10000'])"
+    }
+
+    T 'shot -c 把截图真的放进剪贴板' {
+      $r = Invoke-Tool -Command @('shot', '-c', '-R', '0,0,120,80') -Quiet
+      Assert ($r.Code -eq 0) "exit=$($r.Code)：$($r.Text)"
+      Assert-Match $r.Text '(?m)^ok clipboard$' 'shot -c 输出'
+      # 读回剪贴板要 STA：派生一个 Windows PowerShell 子进程
+      $ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+      $probe = "Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; " +
+               "if ([System.Windows.Forms.Clipboard]::ContainsImage()) { `$i = [System.Windows.Forms.Clipboard]::GetImage(); " +
+               "'IMG ' + `$i.Width + 'x' + `$i.Height; `$i.Dispose() } else { 'NOIMG' }"
+      $out = & $ps51 -NoProfile -STA -Command $probe 2>&1
+      Assert (($out -join ' ') -match 'IMG 120x80') "剪贴板里不是 120x80 的图：$($out -join ' ')"
+    }
+
+    T 'shot -C 把光标画进图里（差异集中在光标附近）' {
+      Focus-Target
+      $dragR = Get-CtlRect 'DragArea'
+      $px = [int]$dragR[0] + 60; $py = [int]$dragR[1] + 60
+      [void](Invoke-Tool -Command @('move', "$px", "$py") -Quiet)
+      Start-Sleep -Milliseconds 350
+      $off = Join-Path $WorkDir 'cursor-off.png'
+      $on = Join-Path $WorkDir 'cursor-on.png'
+      $x0 = $px - 40; $y0 = $py - 40
+      Remove-Item -LiteralPath $off, $on -Force -ErrorAction SilentlyContinue
+      $s1 = Invoke-Tool -Command @('shot', '-o', $off, '-R', "$x0,$y0,80,80") -Quiet
+      Assert ($s1.Code -eq 0) "无光标截图失败（exit=$($s1.Code)）：$($s1.Text)"
+      Assert (Test-Path -LiteralPath $off) "无光标截图没落盘：$off"
+      $s2 = Invoke-Tool -Command @('shot', '-o', $on, '-R', "$x0,$y0,80,80", '-C') -Quiet
+      Assert ($s2.Code -eq 0) "带光标截图失败（exit=$($s2.Code)）：$($s2.Text)"
+      Assert (Test-Path -LiteralPath $on) "带光标截图没落盘：$on"
+      $d = Invoke-Tool -Command @('diff', $off, $on, '-R', "$x0,$y0,80,80") -Quiet
+      Assert ($d.Code -eq 0) "diff exit=$($d.Code)：$($d.Text)"
+      if ($d.Text -notmatch 'ok 变化 (\d+) 像素') { throw "两张图没有差异，-C 可能没画光标：$($d.Text)" }
+      $n = [int]$Matches[1]
+      Assert (($n -ge 10) -and ($n -le 600)) "光标差异像素数 $n 不合理（期望 10..600，一个箭头的大小）"
+    }
+
+    T '拦截名单也拦键盘动作（type/keys/key 返回 3 且不改内容）' {
+      Focus-Target
+      $inputR = Get-CtlRect 'InputBox'
+      Click-Point -X ([int]$inputR[0] + 40) -Y ([int]$inputR[1] + 20)
+      Start-Sleep -Milliseconds 300
+      $before = (Get-TargetState).text
+      $lines = @()
+      if (Test-Path -LiteralPath $DenyFile) { $lines = @([System.IO.File]::ReadAllLines($DenyFile, [System.Text.Encoding]::UTF8)) }
+      [System.IO.File]::WriteAllLines($DenyFile, ($lines + 'DSH UI Target'), (New-Object System.Text.UTF8Encoding $false))
+      try {
+        foreach ($cmd in @(@('type', 'BLOCKED-TYPE'), @('keys', 'BLOCKED'), @('key', 'ctrl+a'))) {
+          $r = Invoke-Tool -Command $cmd -Quiet
+          Assert ($r.Code -eq 3) ("$($cmd -join ' ') 应被拦截返回 3，实际 $($r.Code)：$($r.Text)")
+        }
+        Start-Sleep -Milliseconds 400
+        Assert ((Get-TargetState).text -eq $before) '被拦截的键盘动作竟然改动了文本框'
+      } finally {
+        if ($null -ne $denyBackup) { [System.IO.File]::WriteAllText($DenyFile, $denyBackup, (New-Object System.Text.UTF8Encoding $false)) }
+      }
+    }
+
+    T 'find-text --all 列出全部命中 / --lang 指定识别语言' {
+      Focus-Target
+      $x = [int]$listRect[0] - 6; $y = [int]$listRect[1] - 6
+      $region = "$x,$y,$([int]$listRect[2] + 12),$([int]$listRect[3] + 12)"
+      $one = Invoke-Tool -Command @('find-text', 'SCROLL-ROW', '-R', $region) -Quiet
+      Assert ($one.Code -eq 0) "exit=$($one.Code)：$($one.Text)"
+      $oneLines = @($one.Text -split "`n" | Where-Object { $_ -match 'px_center=' })
+      Assert ($oneLines.Count -eq 1) "默认只应显示 1 条命中，实际 $($oneLines.Count)"
+      $all = Invoke-Tool -Command @('find-text', 'SCROLL-ROW', '-R', $region, '--all') -Quiet
+      $allLines = @($all.Text -split "`n" | Where-Object { $_ -match 'px_center=' })
+      Assert ($allLines.Count -ge 2) "--all 应列出多条命中，实际 $($allLines.Count)"
+      $lang = Invoke-Tool -Command @('find-text', 'SCROLL-ROW', '-R', $region, '--lang', 'en-US') -Quiet
+      Assert ($lang.Code -eq 0) "--lang en-US exit=$($lang.Code)：$($lang.Text)"
+    }
+
+    T 'drag --edge-guard：默认告警，设 0 不告警（干跑即可验证）' {
+      $idx = Get-TargetWindowIndex
+      Assert ($idx -gt 0) '找不到测试靶窗口'
+      $o = (Invoke-Tool -Command @('win', 'list', '--json') -Quiet).Text | ConvertFrom-Json
+      $win = $null
+      foreach ($w in $o.windows) { if ($w.pid -eq $tpid -and $w.title -eq 'DSH UI Target') { $win = $w } }
+      Assert ($null -ne $win) '拿不到窗口矩形'
+      $sx = [int]$win.pos[0] + 3; $sy = [int]$win.pos[1] + [int]($win.size[1] / 2)
+      $ex = $sx + 80; $ey = $sy + 60
+      # 用 --dry：告警是只读计算，干跑下也会打印（且不会真的从窗口边缘起手拖拽）
+      $r1 = Invoke-Tool -Command @('--dry', 'drag', "$sx", "$sy", "$ex", "$ey") -Quiet
+      Assert ($r1.Code -eq 0) "exit=$($r1.Code)"
+      Assert-Match $r1.Text '警告: 起手点距窗口' '默认（12px 阈值）应告警'
+      $r2 = Invoke-Tool -Command @('--dry', 'drag', "$sx", "$sy", "$ex", "$ey", '--edge-guard', '0') -Quiet
+      Assert ($r2.Code -eq 0) "exit=$($r2.Code)"
+      Assert ($r2.Text -notmatch '警告: 起手点距窗口') '--edge-guard 0 不应告警'
+    }
+
+    T 'win minimize / restore 改变窗口状态' {
+      $idx = Get-TargetWindowIndex
+      Assert ($idx -gt 0) '找不到测试靶窗口'
+      [void](Invoke-Tool -Command @('win', 'minimize', "$idx") -Quiet)
+      Start-Sleep -Milliseconds 600
+      $o = (Invoke-Tool -Command @('win', 'list', '--json') -Quiet).Text | ConvertFrom-Json
+      $min = $null
+      foreach ($w in $o.windows) { if ($w.pid -eq $tpid) { $min = [bool]$w.minimized } }
+      Assert ($min -eq $true) "minimize 后 win list 应标记 minimized，实际 $min"
+      $idx2 = Get-TargetWindowIndex
+      [void](Invoke-Tool -Command @('win', 'restore', "$idx2") -Quiet)
+      Start-Sleep -Milliseconds 600
+      $o2 = (Invoke-Tool -Command @('win', 'list', '--json') -Quiet).Text | ConvertFrom-Json
+      $min2 = $null
+      foreach ($w in $o2.windows) { if ($w.pid -eq $tpid) { $min2 = [bool]$w.minimized } }
+      Assert ($min2 -eq $false) "restore 后不应再是 minimized，实际 $min2"
+    }
+
+    T 'win fullscreen 铺满整块屏，再调用一次还原到工作区' {
+      $mon = $dispObj.displays[0].px
+      $idx = Get-TargetWindowIndex
+      $f = Invoke-Tool -Command @('win', 'fullscreen', "$idx") -Quiet
+      Assert ($f.Code -eq 0) "exit=$($f.Code)：$($f.Text)"
+      Assert-Match $f.Text 'ok fullscreen fill' 'fullscreen 输出'
+      Start-Sleep -Milliseconds 600
+      $o = (Invoke-Tool -Command @('win', 'list', '--json') -Quiet).Text | ConvertFrom-Json
+      foreach ($w in $o.windows) {
+        if ($w.pid -eq $tpid) {
+          Assert ([int]$w.size[0] -ge ([int]$mon[0] - 4)) "宽度 $($w.size[0]) 未铺满屏幕 $($mon[0])"
+          Assert ([int]$w.size[1] -ge ([int]$mon[1] - 4)) "高度 $($w.size[1]) 未铺满屏幕 $($mon[1])"
+        }
+      }
+      $idx2 = Get-TargetWindowIndex
+      $f2 = Invoke-Tool -Command @('win', 'fullscreen', "$idx2") -Quiet
+      Assert-Match $f2.Text 'ok fullscreen off' '第二次调用应还原'
+      Start-Sleep -Milliseconds 600
+      $work = $dispObj.displays[0].work_px
+      $o2 = (Invoke-Tool -Command @('win', 'list', '--json') -Quiet).Text | ConvertFrom-Json
+      foreach ($w in $o2.windows) {
+        if ($w.pid -eq $tpid) {
+          Assert ([int]$w.size[1] -le ([int]$work[1] + 40)) "还原后高度 $($w.size[1]) 仍大于工作区 $($work[1])"
+        }
+      }
+    }
+  }
+
+  # ================================ I2. win close（放最后：它会把靶子关掉）===
+  if ($SkipInput) {
+    Skip 'win close' '-SkipInput'
+  } else {
+    Group 'I2. win close（最后跑：它会关掉测试靶）'
+    T 'win close 关掉目标窗口' {
+      $idx = Get-TargetWindowIndex
+      Assert ($idx -gt 0) '找不到测试靶窗口'
+      $r = Invoke-Tool -Command @('win', 'close', "$idx") -Quiet
+      Assert ($r.Code -eq 0) "exit=$($r.Code)：$($r.Text)"
+      Assert-Match $r.Text 'ok closed' 'win close 输出'
+      Start-Sleep -Milliseconds 900
+      $o = (Invoke-Tool -Command @('win', 'list', '--json') -Quiet).Text | ConvertFrom-Json
+      $still = $false
+      foreach ($w in $o.windows) { if ($w.pid -eq $tpid) { $still = $true } }
+      Assert (-not $still) 'win close 之后窗口仍在列表里'
+      Assert ($target.HasExited) 'win close 之后测试靶进程应已退出'
     }
   }
 }
