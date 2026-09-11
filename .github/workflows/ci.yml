@@ -79,3 +79,20 @@ jobs:
           sudo apt-get install -y shellcheck
       - name: Lint install.sh
         run: shellcheck install.sh
+
+  windows-sanity:
+    name: windows static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Windows 侧的静态检查：纯文本层面，不需要 Windows runner、也不需要桌面。
+      # 守的是本项目实际踩过的两个坑 ——
+      #   .ps1 丢了 UTF-8 BOM，Windows PowerShell 5.1 会按 ANSI 代码页解码，
+      #   中文注释吃掉相邻花括号，脚本直接解析失败；
+      #   .cmd 里出现非 ASCII，cmd.exe 按 OEM 代码页解析，会把注释拆成命令去执行。
+      # 另外校验：Windows 产物齐全、skill-windows 的 frontmatter 可被 DSH 识别、
+      # --help 覆盖了分发器里实现的每一条命令。
+      - name: Static checks (BOM / ASCII / skill / --help coverage)
+        shell: pwsh
+        run: ./tests/sanity-windows.ps1

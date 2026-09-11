@@ -32,3 +32,59 @@ jobs:
           gh release view "$tag" > /dev/null 2>&1 || \
             gh release create "$tag" --title "$tag" --generate-notes
           gh release upload "$tag" dsh-ui dsh-ui.sha256 --clobber
+
+  windows:
+    name: package Windows CLI
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # 打包前先做两遍静态检查：PowerShell 7 与 Windows PowerShell 5.1。
+      # 两个宿主都要过 —— BOM 缺失只在 5.1 上表现为解析失败，很容易漏。
+      - name: Static checks (PowerShell 7)
+        shell: pwsh
+        run: ./tests/sanity-windows.ps1
+
+      - name: Static checks (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tests/sanity-windows.ps1
+
+      - name: Package
+        shell: pwsh
+        run: |
+          # 用暂存目录打包：Compress-Archive 传**文件列表**会把目录结构压平
+          # （skill-win/SKILL.md 会变成 SKILL.md），所以先摆好目录再整目录压缩。
+          $stage = Join-Path $env:RUNNER_TEMP 'dsh-ui-windows'
+          if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+          foreach ($d in 'docs', 'skill-win', 'tests') { New-Item -ItemType Directory -Force -Path (Join-Path $stage $d) | Out-Null }
+          Copy-Item 'dsh-ui.ps1', 'dsh-ui.cmd', 'install.ps1' $stage -Force
+          Copy-Item 'docs/REFERENCE-WINDOWS.md', 'docs/VERIFICATION-WINDOWS.md' (Join-Path $stage 'docs') -Force
+          Copy-Item 'skill-win/SKILL.md' (Join-Path $stage 'skill-win') -Force
+          Copy-Item 'tests/verify-windows.ps1', 'tests/ui-target.ps1' (Join-Path $stage 'tests') -Force
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::CreateFromDirectory($stage, "$PWD/dsh-ui-windows.zip")
+          $hash = (Get-FileHash dsh-ui-windows.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  dsh-ui-windows.zip" | Out-File -Encoding ascii dsh-ui-windows.zip.sha256
+          Get-Content dsh-ui-windows.zip.sha256
+
+          # 包里必须真的含有这些路径（压平过一次，这里是防回归）
+          $zip = [System.IO.Compression.ZipFile]::OpenRead("$PWD/dsh-ui-windows.zip")
+          try {
+            $names = @($zip.Entries | ForEach-Object { $_.FullName })
+            foreach ($need in @('dsh-ui.ps1', 'dsh-ui.cmd', 'install.ps1', 'skill-win/SKILL.md',
+                                'docs/REFERENCE-WINDOWS.md', 'tests/verify-windows.ps1')) {
+              if ($names -notcontains $need) { throw "压缩包里缺少 $need" }
+            }
+            Write-Host ("zip 内含 {0} 个条目，目录结构完好" -f $names.Count)
+          } finally { $zip.Dispose() }
+
+      - name: Publish release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) { gh release create $tag --title $tag --generate-notes }
+          gh release upload $tag dsh-ui-windows.zip dsh-ui-windows.zip.sha256 --clobber
