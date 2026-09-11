@@ -1,11 +1,13 @@
-# DSH-computer-use · dsh-ui
+﻿# DSH-computer-use · dsh-ui
 
 [![CI](https://github.com/rayadesune/DSH-computer-use/actions/workflows/ci.yml/badge.svg)](https://github.com/rayadesune/DSH-computer-use/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS%2013%2B-blue)](#%E7%B3%BB%E7%BB%9F%E8%A6%81%E6%B1%82)
+[![Platform](https://img.shields.io/badge/platform-macOS%2013%2B%20%7C%20Windows%2010%2F11-blue)](#windows-%E7%89%88)
 [![Swift](https://img.shields.io/badge/Swift-5.9%2B-orange)](https://swift.org)
+[![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B%20%7C%207.x-blue)](docs/REFERENCE-WINDOWS.md)
 
-**给 AI agent 用的 macOS 图形界面操作原语**：看得见、点得准、能验证。
+**给 AI agent 用的图形界面操作原语**：看得见、点得准、能验证。
+macOS 版是单文件 Swift CLI，Windows 版是单文件 PowerShell CLI，命令面一致。
 
 `dsh-ui` 是一个单文件 Swift CLI（无第三方依赖），通过注入**真实 HID 事件**（`CGEvent`）
 驱动 macOS 桌面。它能操作 AppleScript 与 Accessibility 树覆盖不到的地方——Chromium/CEF
@@ -141,15 +143,60 @@ skill 里有一节实测配方，例如：
 
 完整清单见 [docs/REFERENCE.md](docs/REFERENCE.md) 的「已知限制」一节。
 
+## Windows 版
+
+Windows 端是同一套命令面的 PowerShell 实现（单文件、无第三方依赖），
+把 `CGEvent` 换成 `SendInput`、`screencapture` 换成 GDI、AX 树换成 **UI Automation**、
+Vision OCR 换成 **Windows.Media.Ocr**：
+
+```powershell
+git clone https://github.com/rayadesune/DSH-computer-use.git
+cd DSH-computer-use
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1   # 装到 %LOCALAPPDATA%\dsh-ui\bin 并加进 PATH
+dsh-ui displays                       # 屏幕几何（物理像素 / 逻辑尺寸 / 缩放）
+dsh-ui shot -R 0,0,600,400 --grid 50 --zoom 2   # 带全局坐标标尺的局部放大图
+dsh-ui find-ax "保存" --app 记事本 --click       # UIA 树定位并点击
+dsh-ui --dry click 100 200            # 只打印、不执行
+```
+
+| 内容 | 位置 |
+| --- | --- |
+| 实现（单文件） | [`dsh-ui.ps1`](dsh-ui.ps1) + 启动器 [`dsh-ui.cmd`](dsh-ui.cmd) |
+| 安装脚本 | [`install.ps1`](install.ps1)（带 `-Uninstall`） |
+| 完整命令手册 | [docs/REFERENCE-WINDOWS.md](docs/REFERENCE-WINDOWS.md) |
+| 给 agent 的规范 | [skill-win/SKILL.md](skill-win/SKILL.md) |
+| 自动化验证 | [`tests/verify-windows.ps1`](tests/verify-windows.ps1) + 受控测试靶 [`tests/ui-target.ps1`](tests/ui-target.ps1) |
+| 本机实测记录 | [docs/VERIFICATION-WINDOWS.md](docs/VERIFICATION-WINDOWS.md) |
+
+要点（细节见手册）：
+
+- **宿主**：Windows PowerShell 5.1 与 PowerShell 7.x 都能跑；实测 **5.1 快约一倍**
+  （`find-text` 在 5.1 下进程内直接调 WinRT OCR，PS7 需要派生 5.1 子进程）。
+- **坐标**：全部是全局左上**物理像素**，工具自己设 PerMonitorV2 DPI 感知；
+  截图是 1:1 的，所以 `global = origin + px`（只有 `--zoom` 时才除以放大倍数）。
+- **定位**：`find-ax`（UIA，可 `--pid`/`--app`，支持按窗口标题匹配）优先，`find-text`（OCR）兜底；
+  Windows OCR **不提供置信度**，且**中文识别明显弱于 macOS Vision**，手册里给了实测例子。
+- **验证**：`tests/verify-windows.ps1` 会拉起一个自建 WinForms 测试靶，按靶子自己写出的状态断言
+  「点击真的落在按钮上、输入的字一模一样、拖拽位移符合请求」，本机 37 项全绿。
+- ⚠ **未实测**：多显示器、提权窗口（UIPI）、锁屏状态——本机没有对应环境，手册里已标注。
+
 ## 项目结构
 
 ```
-dsh-ui.swift              # 全部实现（单文件，无依赖）
+dsh-ui.swift              # macOS 实现（单文件，无依赖）
+dsh-ui.ps1                # Windows 实现（单文件 PowerShell；必须保持 UTF-8 with BOM）
+dsh-ui.cmd                # Windows 启动器（自动挑 powershell 5.1 / pwsh）
 Package.swift             # SwiftPM 清单（可选，用于 swift build）
-install.sh                # 编译 + 安装到 ~/.local/bin
+install.sh                # macOS：编译 + 安装到 ~/.local/bin
+install.ps1               # Windows：安装到 %LOCALAPPDATA%\dsh-ui\bin 并加进 PATH
 Makefile                  # build / install / test / sync-skill
-docs/REFERENCE.md         # 完整命令手册（中文）
-skill/SKILL.md            # 给 agent 的操作规范（英文为主）
+docs/REFERENCE.md         # macOS 完整命令手册（中文）
+docs/REFERENCE-WINDOWS.md # Windows 完整命令手册（中文，含与 macOS 的差异）
+docs/VERIFICATION-WINDOWS.md  # Windows 版本机实测记录
+skill/SKILL.md            # 给 agent 的操作规范（macOS）
+skill-win/SKILL.md        # 给 agent 的操作规范（Windows）
+tests/ui-target.ps1       # 受控 WinForms 测试靶
+tests/verify-windows.ps1  # Windows 自动化验证套件（37 项断言）
 .github/workflows/ci.yml  # 构建 + 冒烟测试 + 文档一致性检查
 ```
 
@@ -169,9 +216,18 @@ CI 在每次 push / PR 时于 `macos-14` 上执行：SwiftPM 构建 + `swiftc` �
 
 欢迎提 Issue / PR。两条硬要求：
 
-1. 新命令必须同时更新 `--help`、`docs/REFERENCE.md`，否则 CI 会挂。
-2. 踩到的坑请写进 `skill/SKILL.md` 的「Known limitations」——这个项目最大的价值就是
-   把"看起来能用其实不能用"的边界写清楚。
+1. 新命令必须同时更新 `--help`、`docs/REFERENCE.md`（Windows 侧则是 `docs/REFERENCE-WINDOWS.md`），
+   否则 CI 会挂。
+2. 踩到的坑请写进 `skill/SKILL.md`（Windows 侧 `skill-win/SKILL.md`）的「Known limitations」——
+   这个项目最大的价值就是把"看起来能用其实不能用"的边界写清楚。
+
+Windows 侧额外一条：**`dsh-ui.ps1` / `tests/*.ps1` 必须保存为 UTF-8 with BOM**。
+Windows PowerShell 5.1 读取无 BOM 的 UTF-8 脚本时会按系统 ANSI 代码页解码，
+中文注释会吃掉相邻的花括号导致解析失败（本项目实测踩过一次）。改完可以这样自检：
+
+```powershell
+powershell -NoProfile -File tests\verify-windows.ps1 -AlsoPs51
+```
 
 ## License
 
