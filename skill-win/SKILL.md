@@ -1,4 +1,4 @@
----
+﻿---
 name: dsh-windows-ui
 description: Operate the Windows desktop from DSH — click, type, drag, scroll, capture screenshots with coordinate mapping, locate UI elements through the UI Automation tree or on-screen OCR, manage windows, and verify results. Use whenever a task requires driving a Windows GUI app, browser, or game instead of files or CLI, or when the user asks to open/click/type/search something on their screen.
 whenToUse: The task needs a graphical interface on this Windows machine — clicking a button that has no CLI, reproducing a GUI-only bug, operating Electron/CEF/canvas apps or games, or verifying that a UI change actually rendered.
@@ -23,10 +23,14 @@ Running from the repo checkout works too and needs no install.
 
 **Where this skill lives** — DSH only discovers skills under its skill roots, so the
 repository copy at `skill-win/SKILL.md` is not enough on its own: install it with
-`install.ps1 -WithSkill`, which syncs it to
-`%USERPROFILE%\.dsh\skills\dsh-windows-ui\SKILL.md` (the macOS counterpart is
-`~/.dsh/skills/dsh-macos-ui/`, synced by `make sync-skill`). A sync is picked up by the
-catalog without restarting the host.
+`install.ps1 -WithSkill`, which points
+`%USERPROFILE%\.dsh\skills\dsh-windows-ui` at this repository's `skill-win` directory using a
+**directory junction**, so edits take effect immediately with no sync step (the macOS
+counterpart is `~/.dsh/skills/dsh-macos-ui/`, synced by `make sync-skill`). If a junction
+cannot be created (different volume, non-NTFS), the installer falls back to copying and then
+the copy must be refreshed with `install.ps1 -WithSkill` after every edit. A junction is
+picked up by the catalog without restarting the host; deleting or moving the checkout leaves
+a dangling link, so re-run the installer if the repository moves.
 
 **Prefer a non-GUI path when one exists.** CLI tools, HTTP APIs, config files and MCP
 servers are faster, more reliable and auditable. Reach for GUI automation only when the
@@ -216,12 +220,13 @@ dsh-ui wait-for --change before.png --min-change 500
 The repo ships `tests/verify-windows.ps1`, which drives a self-built WinForms target
 (`tests/ui-target.ps1`) and asserts against **state written by the target itself** — a click
 counts only if the button's own handler fired, typed text must match byte-for-byte, a drag
-must report the requested displacement. 42 assertions pass on PowerShell 7.6 and Windows
+must report the requested displacement. 44 assertions pass on PowerShell 7.6 and Windows
 PowerShell 5.1, covering: CLI baseline/exit codes/audit, region capture + grid pixels,
 `diff`, all three `wait-for` modes, OCR hit accuracy (button centre vs OCR click: 1 px),
 UIA search by pid and by title, `win move/focus/maximize`, real click, `--dry` with no side
 effects, CJK+ASCII typing, real key codes, `ctrl+a`/`delete`, clipboard paste, drag
-displacement, wheel scrolling, denylist exit 3, and per-line batch auditing.
+displacement, wheel scrolling, denylist exit 3, per-line batch auditing, and the skill's own
+junction install (editing the repository copy is visible through the global path with no sync step).
 
 Docs and source: `docs/REFERENCE-WINDOWS.md` (full reference), `dsh-ui.ps1` (source).
 Repo: https://github.com/rayadesune/DSH-computer-use

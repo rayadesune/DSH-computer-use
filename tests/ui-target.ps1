@@ -183,7 +183,14 @@ function Write-TargetState {
     $json = ($script:state | ConvertTo-Json -Depth 6 -Compress)
     $tmp = "$StateFile.tmp"
     [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding $false))
-    Move-Item -LiteralPath $tmp -Destination $StateFile -Force
+    # 落地必须**原子**：Move-Item -Force 是「先删目标再改名」，读方正好落在那个窗口里
+    # 就会扑空（套件实测遇到过"状态文件不存在"）。File.Replace 在 NTFS 上是原子的。
+    if (Test-Path -LiteralPath $StateFile) {
+      try { [System.IO.File]::Replace($tmp, $StateFile, $null) }
+      catch { Move-Item -LiteralPath $tmp -Destination $StateFile -Force }
+    } else {
+      [System.IO.File]::Move($tmp, $StateFile)
+    }
   } catch {
     $err = @{ tickError = $_.Exception.Message
       line = $_.InvocationInfo.ScriptLineNumber

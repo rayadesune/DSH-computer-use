@@ -53,22 +53,33 @@ powershell -NoProfile -File C:\Users\<你>\.local\bin\dsh-ui.ps1 displays   # �
 
 二进制装好不等于 agent 会用。DSH 只从**技能目录**里发现技能
 （源码 `packages/skill/skill-filesystem`：用户级根 = `<home>/.dsh/skills`，
-项目级还有 `<项目>/.dsh/skills` 与 `<项目>/.agents/skills`），所以要单独同步：
+项目级还有 `<项目>/.dsh/skills` 与 `<项目>/.agents/skills`），所以要单独装：
 
 ```powershell
-# 装二进制的同时把 skill 同步到 %USERPROFILE%\.dsh\skills\dsh-windows-ui\SKILL.md
+# 装二进制的同时把 skill 装到 %USERPROFILE%\.dsh\skills\dsh-windows-ui
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Prefix "$env:USERPROFILE\.local" -WithSkill
-# 只同步 skill / 换目录
+# 只装 skill / 换目录 / 强制复制模式
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -WithSkill
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -WithSkill -SkillDest D:\skills\dsh-windows-ui
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -WithSkill -SkillCopy
 ```
 
 这与 macOS 版 `Makefile` 的 `SKILL_DEST ?= $(HOME)/.dsh/skills/dsh-macos-ui` + `make sync-skill`
 是同一个约定，只是技能名是 `dsh-windows-ui`。安装脚本会顺带校验落地文件的前 6 行里有
 `name:` 字段——frontmatter 写错的技能会被 DSH **静默忽略**，校验能当场发现。
 
-实测：同步之后**不需要重启宿主**，新技能立刻出现在会话的技能目录里（技能目录有 watcher，
-会失效缓存），`skill` 工具也能正常加载。
+**默认是目录联接（junction），所以不需要"同步"这个动作**：`%USERPROFILE%\.dsh\skills\dsh-windows-ui`
+直接指向仓库的 `skill-win\`，改完仓库里的 `SKILL.md` 立刻生效（联接是免管理员的目录级链接，
+编辑器"写临时文件再改名"也不会弄断它）。跨盘 / 非 NTFS / 策略禁止时自动退回复制模式，
+那时改完要重跑一次 `-WithSkill`（`-SkillCopy` 可强制复制模式）。联接的代价：仓库被移动或删除后
+链接会悬空，搬仓库后重跑一次安装即可。
+
+卸载：`install.ps1 -Uninstall -WithSkill` —— **只摘链接，绝不删目标**（仓库目录原封不动）；
+不加 `-WithSkill` 时不会碰技能目录，只会提示。
+
+实测：装好之后**不需要重启宿主**，技能立刻出现在会话的技能目录里（技能目录有 watcher，
+会失效缓存），`skill` 工具也能正常加载。验证套件里还有一条**漂移检测**：
+本机安装的 skill 与仓库副本哈希不一致时直接判 FAIL，并给出修复命令。
 
 **宿主选择**（实测，1920×1080 @125%）：
 
@@ -303,7 +314,7 @@ dsh-ui diff before.png after.png
 
 ## 已验证场景（本机实测）
 
-完整记录见 [`VERIFICATION-WINDOWS.md`](VERIFICATION-WINDOWS.md)：42 项断言全绿，覆盖
+完整记录见 [`VERIFICATION-WINDOWS.md`](VERIFICATION-WINDOWS.md)：44 项断言全绿，覆盖
 CLI 基线/退出码/审计、区域截图与网格像素、diff、wait-for 三种模式、OCR 与 UIA 定位精度、
 窗口 move/focus/maximize、真实点击（OCR 命中坐标与按钮中心误差 1px）、中文与 ASCII 输入、
 真实键码、`ctrl+a`/`delete`、剪贴板粘贴、拖拽落点、滚轮滚动、拦截名单 exit 3、batch 逐条审计，

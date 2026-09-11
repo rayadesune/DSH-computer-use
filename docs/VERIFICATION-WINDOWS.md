@@ -1,4 +1,4 @@
-# Windows 版本机验证记录
+﻿# Windows 版本机验证记录
 
 本文件记录 `dsh-ui.ps1`（Windows 版）在**真机**上的验证过程、结果，以及验证期间发现并修掉的问题。
 目的有两个：证明它不是"看起来能用"，以及让后来的人能**复现**这份结论。
@@ -49,7 +49,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\verify-windows.ps1 -Al
 
 ## 结果
 
-**42 项断言全部通过（FAIL 0 / SKIP 0）**，宿主覆盖 PowerShell 7 与 Windows PowerShell 5.1。
+**44 项断言全部通过（FAIL 0 / SKIP 0）**，宿主覆盖 PowerShell 7 与 Windows PowerShell 5.1。
 
 | 分组 | 覆盖的断言 |
 |---|---|
@@ -60,7 +60,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\verify-windows.ps1 -Al
 | E. 真实输入 | `click` 命中按钮、`--dry` 零副作用、`type` 中文+ASCII、`keys` 大小写与符号、`key ctrl+a`+`delete`、剪贴板粘贴、`drag` 位移、`scroll` 滚动列表、`find-ax --click`、`find-text --click`、拦截名单 exit=3 |
 | F. 批量 | `batch` 从 stdin 逐条执行、注释跳过、逐条审计、`-c` 语义 |
 | G. PS 5.1 宿主 | 同一批命令在 Windows PowerShell 5.1 下复跑（`--help`/`displays`/`pos`/`shot`/`diff`/`find-text`/`find-ax`/`win list`） |
-| H. 安装/启动器 | `install.ps1` 安装后可运行、副本仍可解析、`-Uninstall` 清理干净、启动器原样透传退出码、`dsh-ui.cmd` 保持纯 ASCII、默认只装可执行文件（`-WithDocs` 才带文档）、`-WithSkill` 把 SKILL.md 同步到技能目录且 frontmatter 含 `name:`、与仓库副本逐字节一致 |
+| H. 安装/启动器 | `install.ps1` 安装后可运行、副本仍可解析、`-Uninstall` 清理干净、启动器原样透传退出码、`dsh-ui.cmd` 保持纯 ASCII、默认只装可执行文件（`-WithDocs` 才带文档）、`-SkillCopy` 复制模式的内容与 frontmatter、`-WithSkill` 联接模式下改仓库即生效且卸载只摘链接不动源目录、本机已装 skill 的漂移检测 |
 
 `--dry` 是逐条比对**输出文案**的（`dry: would drag (10,10) -> (200,200) settle=80 hold=80 move=300 steps=12 momentum=0` 这种整行匹配），
 再叠一层"预演 11 条动作后靶子的按钮计数 / 文本 / 拖拽标志 / 滚动位置 / 窗口位置 / 剪贴板全都没变"的副作用断言 ——
@@ -202,6 +202,31 @@ OCR 质量采样（同一屏，拉丁 vs 中文）：
     实测**无需重启**：同步之后本次会话的技能目录立刻列出了 `dsh-windows-ui`，
     `skill` 工具加载成功并返回基目录 `C:\Users\<you>\.dsh\skills\dsh-windows-ui`
     （技能目录带 watcher，会失效缓存）。
+
+19. **"要记得同步"本身就该被消灭：改用目录联接（junction）。**
+    复制模式下每次改 skill 都得记得重跑 `-WithSkill`，这是必然会被忘掉的负担。
+    现在 `-WithSkill` 默认把 `~/.dsh/skills/dsh-windows-ui` 做成指向仓库 `skill-win\` 的
+    **目录联接**：改完即生效、零同步动作（免管理员；目录级链接也不会被"写临时文件再改名"弄断）。
+    实测证据：改完仓库里的 SKILL.md 后**不执行任何命令**，从全局路径读到的内容已经变了；
+    往仓库 skill-win 里放一个探针文件，经联接立刻可见，删掉后也立刻消失。
+    退路：跨盘/非 NTFS 时自动回退复制模式（`-SkillCopy` 可强制）。
+
+20. **删链接绝不能递归 —— 那是能删掉仓库的。**
+    `Remove-Item -Recurse` 作用在目录联接上有可能顺着链接递归进目标；对技能联接来说
+    目标就是本仓库。所以安装脚本和验证套件都改成"先识别重解析点、用
+    `[System.IO.Directory]::Delete(path, $false)` 只摘链接"（`Remove-LinkOrDir` / `Remove-TreeSafe`），
+    并加了一条断言：`-Uninstall -WithSkill` 之后**联接消失但源目录（SKILL.md 及其内容）必须完好**。
+
+21. **状态文件要原子落地，否则读方会扑空。**
+    靶子原来用 `Move-Item -Force` 覆盖状态文件，那是"先删目标再改名"：读方正好落在这个窗口里
+    就会报"状态文件不存在"（套件跑出过一次假失败）。改成 `[System.IO.File]::Replace()`
+    （NTFS 上原子），读方也加了 3 秒退避重试。修完高频读 60 次 0 失败。
+
+22. **依赖"目标窗口可见"的测试，必须自己保证可见性。**
+    `find-text`/`wait-for --text`/`under` 都要求目标真的显示在屏幕上；本机是用户的实时桌面，
+    只要运行期间有别的窗口抢到前台，这几条就会随机失败（实测截图里出现的是 DSH 自己的对话）。
+    套件现在在这些用例前调用 `Focus-Target`（`win list --json` 找序号 → `win focus`），
+    把"环境前提"变成测试自己负责的事，而不是假设靶子一直浮在最上面。
 
 ## 未验证 / 已知缺口
 

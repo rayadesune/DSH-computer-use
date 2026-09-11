@@ -1,9 +1,9 @@
 {
-  "when": "2026-09-11T13:58:59",
+  "when": "2026-09-11T14:15:09",
   "host": "7.6.6 Core",
   "os": "Microsoft Windows NT 10.0.26200.0",
   "scale": 1.25,
-  "pass": 42,
+  "pass": 44,
   "fail": 0,
   "skip": 0,
   "results": [
@@ -11,294 +11,308 @@
       "group": "",
       "name": "help 覆盖所有已分发命令",
       "status": "PASS",
-      "ms": 1011,
+      "ms": 1155,
       "detail": null
     },
     {
       "group": "",
       "name": "displays 文本 + JSON",
       "status": "PASS",
-      "ms": 1034,
+      "ms": 1081,
       "detail": null
     },
     {
       "group": "",
       "name": "pos 打印光标（左上原点）",
       "status": "PASS",
-      "ms": 1004,
+      "ms": 1068,
       "detail": null
     },
     {
       "group": "",
       "name": "用法错误 exit=2（非数字坐标 / 未知选项 / 未知命令）",
       "status": "PASS",
-      "ms": 2976,
+      "ms": 3152,
       "detail": null
     },
     {
       "group": "",
       "name": "未命中 exit=1（find-text 查不到）",
       "status": "PASS",
-      "ms": 1794,
+      "ms": 1844,
       "detail": null
     },
     {
       "group": "",
       "name": "审计日志逐条落盘",
       "status": "PASS",
-      "ms": 26,
+      "ms": 18,
       "detail": null
     },
     {
       "group": "",
       "name": "--dry 矩阵：每条输入类命令都只打印动作、不执行",
       "status": "PASS",
-      "ms": 17681,
+      "ms": 18965,
       "detail": null
     },
     {
       "group": "",
       "name": "shot -R 区域截图：尺寸与映射一致",
       "status": "PASS",
-      "ms": 1260,
+      "ms": 1331,
       "detail": null
     },
     {
       "group": "",
       "name": "shot --grid/--zoom 派生文件 + 网格像素",
       "status": "PASS",
-      "ms": 1380,
+      "ms": 1462,
       "detail": null
     },
     {
       "group": "",
       "name": "diff 同图 -> 无差异",
       "status": "PASS",
-      "ms": 1191,
+      "ms": 1274,
       "detail": null
     },
     {
       "group": "",
       "name": "wait-for --stable 在静止区域收敛",
       "status": "PASS",
-      "ms": 1874,
+      "ms": 1909,
       "detail": null
     },
     {
       "group": "",
       "name": "wait-for --change 对参考图变化收敛",
       "status": "PASS",
-      "ms": 1922,
+      "ms": 1965,
       "detail": null
     },
     {
       "group": "",
       "name": "wait-for --text 等到 OCR 出现指定文字",
       "status": "PASS",
-      "ms": 1742,
+      "ms": 4524,
       "detail": null
     },
     {
       "group": "",
       "name": "wait-for --text 等不到时超时 exit=1",
       "status": "PASS",
-      "ms": 3737,
+      "ms": 3902,
       "detail": null
     },
     {
       "group": "",
       "name": "find-ax --pid 找到按钮并给出可点击坐标",
       "status": "PASS",
-      "ms": 17,
+      "ms": 5,
       "detail": null
     },
     {
       "group": "",
       "name": "find-ax --app 按窗口标题匹配应用",
       "status": "PASS",
-      "ms": 2184,
+      "ms": 2336,
       "detail": null
     },
     {
       "group": "",
       "name": "find-text 命中的坐标落在靶控件内（OCR 定位精度）",
       "status": "PASS",
-      "ms": 1756,
+      "ms": 4723,
       "detail": null
     },
     {
       "group": "",
       "name": "under 报告落点所属应用",
       "status": "PASS",
-      "ms": 1067,
+      "ms": 3828,
       "detail": null
     },
     {
       "group": "",
       "name": "--dry 预演一整套动作后靶子状态零变化",
       "status": "PASS",
-      "ms": 13659,
+      "ms": 13370,
       "detail": null
     },
     {
       "group": "",
       "name": "win list --json 含测试靶且坐标与 UIA 一致",
       "status": "PASS",
-      "ms": 1129,
+      "ms": 1160,
       "detail": null
     },
     {
       "group": "",
       "name": "win move 移动窗口并回读",
       "status": "PASS",
-      "ms": 2595,
+      "ms": 2706,
       "detail": null
     },
     {
       "group": "",
       "name": "win focus 使窗口成为前台",
       "status": "PASS",
-      "ms": 3569,
+      "ms": 3801,
       "detail": null
     },
     {
       "group": "",
       "name": "win maximize 填满工作区",
       "status": "PASS",
-      "ms": 6494,
+      "ms": 6839,
       "detail": null
     },
     {
       "group": "",
       "name": "click 真的点到 Submit 按钮上",
       "status": "PASS",
-      "ms": 1675,
+      "ms": 1752,
       "detail": null
     },
     {
       "group": "",
       "name": "--dry click 不产生任何副作用",
       "status": "PASS",
-      "ms": 1307,
+      "ms": 1372,
       "detail": null
     },
     {
       "group": "",
       "name": "type 输入中文+ASCII（KEYEVENTF_UNICODE）",
       "status": "PASS",
-      "ms": 3176,
+      "ms": 3294,
       "detail": null
     },
     {
       "group": "",
       "name": "keys ASCII 真实键码（大写/符号带 shift）",
       "status": "PASS",
-      "ms": 1841,
+      "ms": 1906,
       "detail": null
     },
     {
       "group": "",
       "name": "key ctrl+a / delete 清空文本",
       "status": "PASS",
-      "ms": 2835,
+      "ms": 2985,
       "detail": null
     },
     {
       "group": "",
       "name": "clipboard set + ctrl+v 粘贴",
       "status": "PASS",
-      "ms": 3522,
+      "ms": 3749,
       "detail": null
     },
     {
       "group": "",
       "name": "drag 真实拖拽：落点与请求方向/幅度一致",
       "status": "PASS",
-      "ms": 2247,
+      "ms": 2286,
       "detail": null
     },
     {
       "group": "",
       "name": "scroll 滚动可滚动列表",
       "status": "PASS",
-      "ms": 4773,
+      "ms": 5021,
       "detail": null
     },
     {
       "group": "",
       "name": "find-ax --click 点到按钮上",
       "status": "PASS",
-      "ms": 3335,
+      "ms": 3521,
       "detail": null
     },
     {
       "group": "",
       "name": "find-text --click 点到 OCR 命中的按钮上",
       "status": "PASS",
-      "ms": 2494,
+      "ms": 5269,
       "detail": null
     },
     {
       "group": "",
       "name": "denylist 命中时 exit=3 且不执行",
       "status": "PASS",
-      "ms": 2716,
+      "ms": 2836,
       "detail": null
     },
     {
       "group": "",
       "name": "batch 从 stdin 逐条执行并逐条审计",
       "status": "PASS",
-      "ms": 1106,
+      "ms": 1184,
       "detail": null
     },
     {
       "group": "",
       "name": "guard 打印名单/日志/干跑状态",
       "status": "PASS",
-      "ms": 1020,
+      "ms": 1081,
       "detail": null
     },
     {
       "group": "",
       "name": "PS 5.1: --help / displays / pos",
       "status": "PASS",
-      "ms": 1652,
+      "ms": 1815,
       "detail": null
     },
     {
       "group": "",
       "name": "PS 5.1: shot / diff / find-text",
       "status": "PASS",
-      "ms": 2430,
+      "ms": 2712,
       "detail": null
     },
     {
       "group": "",
       "name": "PS 5.1: find-ax / win list",
       "status": "PASS",
-      "ms": 1585,
+      "ms": 1773,
       "detail": null
     },
     {
       "group": "",
       "name": "install.ps1 安装后可运行、-Uninstall 可清理",
       "status": "PASS",
-      "ms": 13250,
+      "ms": 13172,
       "detail": null
     },
     {
       "group": "",
       "name": "dsh-ui.cmd 保持纯 ASCII（cmd 按 OEM 代码页解析 .cmd）",
       "status": "PASS",
-      "ms": 5,
+      "ms": 7,
       "detail": null
     },
     {
       "group": "",
       "name": "install.ps1 默认只装可执行文件（不把 docs/tests 倒进 bin 的上级目录）",
       "status": "PASS",
-      "ms": 12217,
+      "ms": 12762,
+      "detail": null
+    },
+    {
+      "group": "",
+      "name": "skill 用目录联接安装：改仓库的 SKILL.md 立刻生效（无需再同步）",
+      "status": "PASS",
+      "ms": 11843,
+      "detail": null
+    },
+    {
+      "group": "",
+      "name": "本机已安装的全局 skill 与仓库副本一致（漂移检测）",
+      "status": "PASS",
+      "ms": 1,
       "detail": null
     }
   ]
