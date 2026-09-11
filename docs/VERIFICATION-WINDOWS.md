@@ -181,7 +181,7 @@ OCR 质量采样（同一屏，拉丁 vs 中文）：
     —— 那是正确行为，不是 bug（第一版测试就写错了这一点，被套件自己纠正过来）。
 
 16. **装到哪：`%USERPROFILE%\.local\bin` 才是 macOS `~/.local/bin` 的对应位置。**
-    实测本机 `C:\Users\<you>\.local\bin` **已存在、且已在用户 PATH 与当前进程 PATH 里**，
+    实测本机 `C:\Users\<你>\.local\bin` **已存在、且已在用户 PATH 与当前进程 PATH 里**，
     所以把 `dsh-ui.ps1` / `dsh-ui.cmd` 放进去当场就能按名字调用（PowerShell 命中 `.ps1`、
     cmd 命中 `.cmd`），无需重开终端 —— 而 `%LOCALAPPDATA%\dsh-ui\bin` 还得改 PATH 才生效。
     另外：`install.ps1` 一开始会把 `docs/` `skill-win/` `tests/` 一并复制到 `-Prefix` 下，
@@ -201,7 +201,7 @@ OCR 质量采样（同一屏，拉丁 vs 中文）：
     （对应 macOS 版 Makefile 的 `SKILL_DEST` + `make sync-skill`），并校验落地文件前 6 行含
     `name:` —— frontmatter 不合格的技能会被**静默忽略**，不校验的话只会表现为"技能就是不出现"。
     实测**无需重启**：同步之后本次会话的技能目录立刻列出了 `dsh-windows-ui`，
-    `skill` 工具加载成功并返回基目录 `C:\Users\<you>\.dsh\skills\dsh-windows-ui`
+    `skill` 工具加载成功并返回基目录 `C:\Users\<你>\.dsh\skills\dsh-windows-ui`
     （技能目录带 watcher，会失效缓存）。
 
 19. **"要记得同步"本身就该被消灭：改用目录联接（junction）。**
