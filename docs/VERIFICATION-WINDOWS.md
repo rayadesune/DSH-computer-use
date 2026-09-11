@@ -258,9 +258,19 @@ OCR 质量采样（同一屏，拉丁 vs 中文）：
 | `.github/workflows/release.yml` → `windows` | 双宿主静态检查 → 打包 `dsh-ui-windows.zip`（工具/安装脚本/手册/skill/验证套件，保留目录结构）+ sha256 → 上传到同一个 Release | 把 Package 步骤整段从 YAML 里抽出来在本机实跑：zip 8 个条目、目录结构完好、sha256 自洽。第一次用 `Compress-Archive` 传文件列表时**目录被压平**（`skill-win/SKILL.md` → `SKILL.md`），已改成暂存目录 + `ZipFile::CreateFromDirectory`，并加了一条"包里必须有这些路径"的断言防回归 |
 | 本机 `tests/verify-windows.ps1` | 54 项断言，需要真实桌面与交互会话 | 全绿（PowerShell 7.6 与 5.1 各一遍） |
 
-**诚实说明**：两个 workflow 文件本身只在 GitHub runner 上真正执行过——我这边能验证的是
-YAML 能被解析（`yaml.safe_load` 通过、jobs 与 steps 结构完整）、以及每个 `run:` 脚本段在本机
-逐字跑通。第一次 push 之后我会看 CI 的实际结果。
+**实测结果**（push `b156685` 后由 GitHub 真跑，run `34571645512`）：
+
+```
+build & smoke test        success     (macOS：SwiftPM + swiftc 构建、冒烟、--help 覆盖、文档一致性)
+shellcheck                success
+windows static checks     success     (6s，就是上面那组静态检查 —— 在 ubuntu runner 上跑通了)
+```
+
+`windows-sanity` 这一项此前只能在本地验证逻辑，现在确认它在 Linux runner + pwsh 上真能跑：
+脚本里的路径全部用正斜杠正是为了这一步（反斜杠在 Linux 上会被当成文件名的一部分）。
+
+`release.yml` 的 `windows` 作业只在推 `v*` 标签时触发，本轮**没有**实测；它的 Package 步骤
+已整段抽出来在本机跑通，打包内容与 sha256 自洽。
 ## 未验证 / 已知缺口
 
 诚实列出，避免"全绿"被过度解读：
