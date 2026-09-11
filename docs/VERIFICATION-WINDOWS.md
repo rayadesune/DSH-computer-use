@@ -250,6 +250,17 @@ OCR 质量采样（同一屏，拉丁 vs 中文）：
     `[void](Invoke-Tool ...)`（丢掉退出码、不检查产物是否存在），失败时只表现为
     `diff: 无法读取图片`，看不出是谁的错。改成逐条断言退出码 + 产物存在后，
     工具的原始报错立刻浮出来，两次根因都是这样定位的。
+## CI / Release 覆盖了什么
+
+| 位置 | 跑什么 | 本机验证到什么程度 |
+|---|---|---|
+| `.github/workflows/ci.yml` → `windows-sanity` | `tests/sanity-windows.ps1`：`.ps1` 必带 UTF-8 BOM、`.cmd` 必须纯 ASCII、Windows 产物齐全、skill frontmatter、`--help` 覆盖分发器里的每条命令 | 脚本本机用 pwsh 7 与 Windows PowerShell 5.1 各跑一遍全过；另外做了 4 种"故意做坏"（去 BOM、往 .cmd 塞中文、改错 skill name、从 --help 删一条命令），全部被抓到 —— 检查本身的有效性也验了 |
+| `.github/workflows/release.yml` → `windows` | 双宿主静态检查 → 打包 `dsh-ui-windows.zip`（工具/安装脚本/手册/skill/验证套件，保留目录结构）+ sha256 → 上传到同一个 Release | 把 Package 步骤整段从 YAML 里抽出来在本机实跑：zip 8 个条目、目录结构完好、sha256 自洽。第一次用 `Compress-Archive` 传文件列表时**目录被压平**（`skill-win/SKILL.md` → `SKILL.md`），已改成暂存目录 + `ZipFile::CreateFromDirectory`，并加了一条"包里必须有这些路径"的断言防回归 |
+| 本机 `tests/verify-windows.ps1` | 54 项断言，需要真实桌面与交互会话 | 全绿（PowerShell 7.6 与 5.1 各一遍） |
+
+**诚实说明**：两个 workflow 文件本身只在 GitHub runner 上真正执行过——我这边能验证的是
+YAML 能被解析（`yaml.safe_load` 通过、jobs 与 steps 结构完整）、以及每个 `run:` 脚本段在本机
+逐字跑通。第一次 push 之后我会看 CI 的实际结果。
 ## 未验证 / 已知缺口
 
 诚实列出，避免"全绿"被过度解读：

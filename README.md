@@ -1,4 +1,4 @@
-﻿# DSH-computer-use · dsh-ui
+# DSH-computer-use · dsh-ui
 
 [![CI](https://github.com/rayadesune/DSH-computer-use/actions/workflows/ci.yml/badge.svg)](https://github.com/rayadesune/DSH-computer-use/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -201,6 +201,9 @@ dsh-ui --dry click 100 200            # 只打印、不执行
   Windows OCR **不提供置信度**，且**中文识别明显弱于 macOS Vision**，手册里给了实测例子。
 - **验证**：`tests/verify-windows.ps1` 会拉起一个自建 WinForms 测试靶，按靶子自己写出的状态断言
   「点击真的落在按钮上、输入的字一模一样、拖拽位移符合请求」，本机 54 项全绿。
+- **CI / Release**：CI 里有一组不依赖桌面的 Windows 静态检查（.ps1 必带 BOM、.cmd 必须纯 ASCII、
+  skill frontmatter、--help 覆盖每条命令）；打 tag 时 Release 会额外产出 dsh-ui-windows.zip
+  （含工具、安装脚本、Windows 手册、skill 与验证套件）并附 sha256。
 - ⚠ **未实测**：多显示器、提权窗口（UIPI）、锁屏状态——本机没有对应环境，手册里已标注。
 
 ## 项目结构
@@ -219,8 +222,10 @@ docs/VERIFICATION-WINDOWS.md  # Windows 版本机实测记录
 skill/SKILL.md            # 给 agent 的操作规范（macOS）
 skill-win/SKILL.md        # 给 agent 的操作规范（Windows）
 tests/ui-target.ps1       # 受控 WinForms 测试靶
-tests/verify-windows.ps1  # Windows 自动化验证套件（54 项断言）
-.github/workflows/ci.yml  # 构建 + 冒烟测试 + 文档一致性检查
+tests/verify-windows.ps1  # Windows 自动化验证套件（54 项断言，需要桌面）
+tests/sanity-windows.ps1  # Windows 静态检查（任意平台可跑，CI 用）
+.gitattributes            # Windows 脚本按 CRLF 检出、其余保持 LF
+.github/workflows/ci.yml  # 构建 + 冒烟测试 + 文档一致性检查 + Windows 静态检查
 ```
 
 ## 开发
