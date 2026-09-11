@@ -1,4 +1,4 @@
-# Windows 版本机验证记录
+﻿# Windows 版本机验证记录
 
 本文件记录 `dsh-ui.ps1`（Windows 版）在**真机**上的验证过程、结果，以及验证期间发现并修掉的问题。
 目的有两个：证明它不是"看起来能用"，以及让后来的人能**复现**这份结论。
@@ -49,7 +49,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\verify-windows.ps1 -Al
 
 ## 结果
 
-**41 项断言全部通过（FAIL 0 / SKIP 0）**，宿主覆盖 PowerShell 7 与 Windows PowerShell 5.1。
+**42 项断言全部通过（FAIL 0 / SKIP 0）**，宿主覆盖 PowerShell 7 与 Windows PowerShell 5.1。
 
 | 分组 | 覆盖的断言 |
 |---|---|
@@ -60,7 +60,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\verify-windows.ps1 -Al
 | E. 真实输入 | `click` 命中按钮、`--dry` 零副作用、`type` 中文+ASCII、`keys` 大小写与符号、`key ctrl+a`+`delete`、剪贴板粘贴、`drag` 位移、`scroll` 滚动列表、`find-ax --click`、`find-text --click`、拦截名单 exit=3 |
 | F. 批量 | `batch` 从 stdin 逐条执行、注释跳过、逐条审计、`-c` 语义 |
 | G. PS 5.1 宿主 | 同一批命令在 Windows PowerShell 5.1 下复跑（`--help`/`displays`/`pos`/`shot`/`diff`/`find-text`/`find-ax`/`win list`） |
-| H. 安装/启动器 | `install.ps1` 安装后可运行、副本仍可解析、`-Uninstall` 清理干净、启动器原样透传退出码、`dsh-ui.cmd` 保持纯 ASCII |
+| H. 安装/启动器 | `install.ps1` 安装后可运行、副本仍可解析、`-Uninstall` 清理干净、启动器原样透传退出码、`dsh-ui.cmd` 保持纯 ASCII、默认只装可执行文件（`-WithDocs` 才带文档） |
 
 `--dry` 是逐条比对**输出文案**的（`dry: would drag (10,10) -> (200,200) settle=80 hold=80 move=300 steps=12 momentum=0` 这种整行匹配），
 再叠一层"预演 11 条动作后靶子的按钮计数 / 文本 / 拖拽标志 / 滚动位置 / 窗口位置 / 剪贴板全都没变"的副作用断言 ——
@@ -178,6 +178,19 @@ OCR 质量采样（同一屏，拉丁 vs 中文）：
 15. **`--dry find-text --click` 仍然会真的截图 + OCR**（与 macOS 版一致），只把点击换成打印。
     所以它的 dry 断言必须给一个真能识别出文字的区域；用 10×10 的空区域测会得到 exit=1
     —— 那是正确行为，不是 bug（第一版测试就写错了这一点，被套件自己纠正过来）。
+
+16. **装到哪：`%USERPROFILE%\.local\bin` 才是 macOS `~/.local/bin` 的对应位置。**
+    实测本机 `C:\Users\<you>\.local\bin` **已存在、且已在用户 PATH 与当前进程 PATH 里**，
+    所以把 `dsh-ui.ps1` / `dsh-ui.cmd` 放进去当场就能按名字调用（PowerShell 命中 `.ps1`、
+    cmd 命中 `.cmd`），无需重开终端 —— 而 `%LOCALAPPDATA%\dsh-ui\bin` 还得改 PATH 才生效。
+    另外：`install.ps1` 一开始会把 `docs/` `skill-win/` `tests/` 一并复制到 `-Prefix` 下，
+    一旦 `-Prefix` 指向 `~/.local` 就等于往用户自己目录里倒垃圾；已改成默认**只装可执行文件**
+    （与 macOS 版 `install.sh` 一致），要连文档一起装得显式加 `-WithDocs`，并补了断言防回归。
+
+17. **"PATH 里有" 和 "当前进程能看到" 是两件事。** 用户级 PATH 是注册表里给**新进程**用的；
+    agent 所在的宿主进程如果启动更早，它和它派生的子进程用的都是旧快照。
+    本机恰好两处都已有 `~/.local/bin`，所以按名字可调用；换个环境就要退回绝对路径
+    （`C:\Users\<你>\.local\bin\dsh-ui.cmd`）或从仓库直接跑 `dsh-ui.ps1`。
 
 ## 未验证 / 已知缺口
 

@@ -722,6 +722,26 @@ try {
     $bad = @($bytes | Where-Object { $_ -gt 127 })
     Assert ($bad.Count -eq 0) "dsh-ui.cmd 含 $($bad.Count) 个非 ASCII 字节；cmd.exe 会按 OEM 代码页解析，中文注释会把批处理拆坏"
   }
+
+  T 'install.ps1 默认只装可执行文件（不把 docs/tests 倒进 bin 的上级目录）' {
+    # 这条是给「装进 %USERPROFILE%\.local」准备的：bin 的上级目录是用户自己的目录，
+    # 默认往里塞 docs/ tests/ 就是污染。想一并装用 -WithDocs。
+    Remove-Item -LiteralPath $testPrefix -Recurse -Force -ErrorAction SilentlyContinue
+    try {
+      & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'install.ps1') -Prefix $testPrefix -NoPath 2>&1 | Out-Null
+      Assert ($LASTEXITCODE -eq 0) "install exit=$LASTEXITCODE"
+      $entries = @(Get-ChildItem -LiteralPath $testPrefix -Directory | ForEach-Object { $_.Name })
+      $extra = @($entries | Where-Object { $_ -in @('docs', 'tests', 'skill-win') })
+      Assert ($extra.Count -eq 0) ("默认安装不应产生额外目录，实际: " + ($extra -join ', '))
+      Assert (Test-Path -LiteralPath (Join-Path $testPrefix 'bin\dsh-ui.cmd')) '缺少 dsh-ui.cmd'
+
+      & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'install.ps1') -Prefix $testPrefix -NoPath -WithDocs 2>&1 | Out-Null
+      Assert (Test-Path -LiteralPath (Join-Path $testPrefix 'tests\verify-windows.ps1')) '-WithDocs 应把验证套件一并装过去'
+      Assert (Test-Path -LiteralPath (Join-Path $testPrefix 'docs\REFERENCE-WINDOWS.md')) '-WithDocs 应把手册一并装过去'
+    } finally {
+      & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'install.ps1') -Prefix $testPrefix -Uninstall 2>&1 | Out-Null
+    }
+  }
 }
 catch {
   Write-Host ""
