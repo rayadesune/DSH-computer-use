@@ -1,4 +1,4 @@
-﻿---
+---
 name: dsh-windows-ui
 description: Operate the Windows desktop from DSH — click, type, drag, scroll, capture screenshots with coordinate mapping, locate UI elements through the UI Automation tree or on-screen OCR, manage windows, and verify results. Use whenever a task requires driving a Windows GUI app, browser, or game instead of files or CLI, or when the user asks to open/click/type/search something on their screen.
 whenToUse: The task needs a graphical interface on this Windows machine — clicking a button that has no CLI, reproducing a GUI-only bug, operating Electron/CEF/canvas apps or games, or verifying that a UI change actually rendered.
@@ -20,6 +20,13 @@ If `dsh-ui` does not resolve (the host process may have started before the insta
 `PATH` snapshot is stale), call it by absolute path instead — either
 `C:\Users\<you>\.local\bin\dsh-ui.cmd <cmd>` or `powershell -NoProfile -File <repo>\dsh-ui.ps1 <cmd>`.
 Running from the repo checkout works too and needs no install.
+
+**Where this skill lives** — DSH only discovers skills under its skill roots, so the
+repository copy at `skill-win/SKILL.md` is not enough on its own: install it with
+`install.ps1 -WithSkill`, which syncs it to
+`%USERPROFILE%\.dsh\skills\dsh-windows-ui\SKILL.md` (the macOS counterpart is
+`~/.dsh/skills/dsh-macos-ui/`, synced by `make sync-skill`). A sync is picked up by the
+catalog without restarting the host.
 
 **Prefer a non-GUI path when one exists.** CLI tools, HTTP APIs, config files and MCP
 servers are faster, more reliable and auditable. Reach for GUI automation only when the

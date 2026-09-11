@@ -738,6 +738,16 @@ try {
       & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'install.ps1') -Prefix $testPrefix -NoPath -WithDocs 2>&1 | Out-Null
       Assert (Test-Path -LiteralPath (Join-Path $testPrefix 'tests\verify-windows.ps1')) '-WithDocs 应把验证套件一并装过去'
       Assert (Test-Path -LiteralPath (Join-Path $testPrefix 'docs\REFERENCE-WINDOWS.md')) '-WithDocs 应把手册一并装过去'
+
+      # 全局 skill：DSH 从 <home>/.dsh/skills/<name>/SKILL.md 读用户级技能，所以它得单独同步
+      $skillDest = Join-Path $testPrefix 'skill-dest\dsh-windows-ui'
+      & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'install.ps1') -Prefix $testPrefix -NoPath -WithSkill -SkillDest $skillDest 2>&1 | Out-Null
+      $skillFile = Join-Path $skillDest 'SKILL.md'
+      Assert (Test-Path -LiteralPath $skillFile) '-WithSkill 应把 SKILL.md 同步到 -SkillDest'
+      $head = [System.IO.File]::ReadAllLines($skillFile, [System.Text.Encoding]::UTF8)
+      $nameLine = @($head | Select-Object -First 6 | Where-Object { $_ -match '^name:\s*dsh-windows-ui\s*$' })
+      Assert ($nameLine.Count -eq 1) 'SKILL.md 的 frontmatter 里应有 name: dsh-windows-ui（DSH 靠它注册技能）'
+      Assert ((Get-FileHash $skillFile).Hash -eq (Get-FileHash (Join-Path $Root 'skill-win\SKILL.md')).Hash) '同步过去的 SKILL.md 应与仓库副本逐字节一致'
     } finally {
       & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'install.ps1') -Prefix $testPrefix -Uninstall 2>&1 | Out-Null
     }

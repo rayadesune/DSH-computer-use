@@ -1,4 +1,4 @@
-﻿# DSH-computer-use · dsh-ui
+# DSH-computer-use · dsh-ui
 
 [![CI](https://github.com/rayadesune/DSH-computer-use/actions/workflows/ci.yml/badge.svg)](https://github.com/rayadesune/DSH-computer-use/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -152,8 +152,8 @@ Vision OCR 换成 **Windows.Media.Ocr**：
 ```powershell
 git clone https://github.com/rayadesune/DSH-computer-use.git
 cd DSH-computer-use
-# 装到 %USERPROFILE%\.local\bin —— 对应 macOS 版的 ~/.local/bin
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Prefix "$env:USERPROFILE\.local"
+# 装到 %USERPROFILE%\.local\bin（对应 macOS 的 ~/.local/bin），并同步全局 skill
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Prefix "$env:USERPROFILE\.local" -WithSkill
 dsh-ui displays                       # 屏幕几何（物理像素 / 逻辑尺寸 / 缩放）
 dsh-ui shot -R 0,0,600,400 --grid 50 --zoom 2   # 带全局坐标标尺的局部放大图
 dsh-ui find-ax "保存" --app 记事本 --click       # UIA 树定位并点击
@@ -165,6 +165,16 @@ dsh-ui --dry click 100 200            # 只打印、不执行
 `%LOCALAPPDATA%\dsh-ui\bin`）。宿主进程若在安装前启动、PATH 快照过期，用绝对路径调用即可：
 `C:\Users\<你>\.local\bin\dsh-ui.cmd displays` 或从仓库直接跑 `dsh-ui.ps1`。
 卸载：`.\install.ps1 -Prefix "$env:USERPROFILE\.local" -Uninstall`。
+
+**agent 的 skill 是另一件事**：DSH 只从技能目录读全局技能，所以 skill 得单独同步
+（`-WithSkill`，对应 macOS 版的 `make sync-skill`）。它落到
+`%USERPROFILE%\.dsh\skills\dsh-windows-ui\SKILL.md`，与 mac 版 `~/.dsh/skills/dsh-macos-ui/`
+同一个约定（DSH 源码 `packages/skill/skill-filesystem` 里的 `user-dsh` 根）：
+
+```powershell
+.\install.ps1 -WithSkill                                        # 默认 ~/.dsh/skills/dsh-windows-ui
+.\install.ps1 -WithSkill -SkillDest D:\skills\dsh-windows-ui    # 换目录
+```
 
 | 内容 | 位置 |
 | --- | --- |
