@@ -1,4 +1,4 @@
-﻿# Windows 版本机验证记录
+# Windows 版本机验证记录
 
 本文件记录 `dsh-ui.ps1`（Windows 版）在**真机**上的验证过程、结果，以及验证期间发现并修掉的问题。
 目的有两个：证明它不是"看起来能用"，以及让后来的人能**复现**这份结论。
@@ -60,7 +60,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\verify-windows.ps1 -Al
 | E. 真实输入 | `click` 命中按钮、`--dry` 零副作用、`type` 中文+ASCII、`keys` 大小写与符号、`key ctrl+a`+`delete`、剪贴板粘贴、`drag` 位移、`scroll` 滚动列表、`find-ax --click`、`find-text --click`、拦截名单 exit=3 |
 | F. 批量 | `batch` 从 stdin 逐条执行、注释跳过、逐条审计、`-c` 语义 |
 | G. PS 5.1 宿主 | 同一批命令在 Windows PowerShell 5.1 下复跑（`--help`/`displays`/`pos`/`shot`/`diff`/`find-text`/`find-ax`/`win list`） |
-| H. 安装/启动器 | `install.ps1` 安装后可运行、副本仍可解析、`-Uninstall` 清理干净、启动器原样透传退出码、`dsh-ui.cmd` 保持纯 ASCII、默认只装可执行文件（`-WithDocs` 才带文档） |
+| H. 安装/启动器 | `install.ps1` 安装后可运行、副本仍可解析、`-Uninstall` 清理干净、启动器原样透传退出码、`dsh-ui.cmd` 保持纯 ASCII、默认只装可执行文件（`-WithDocs` 才带文档）、`-WithSkill` 把 SKILL.md 同步到技能目录且 frontmatter 含 `name:`、与仓库副本逐字节一致 |
 
 `--dry` 是逐条比对**输出文案**的（`dry: would drag (10,10) -> (200,200) settle=80 hold=80 move=300 steps=12 momentum=0` 这种整行匹配），
 再叠一层"预演 11 条动作后靶子的按钮计数 / 文本 / 拖拽标志 / 滚动位置 / 窗口位置 / 剪贴板全都没变"的副作用断言 ——
@@ -191,6 +191,17 @@ OCR 质量采样（同一屏，拉丁 vs 中文）：
     agent 所在的宿主进程如果启动更早，它和它派生的子进程用的都是旧快照。
     本机恰好两处都已有 `~/.local/bin`，所以按名字可调用；换个环境就要退回绝对路径
     （`C:\Users\<你>\.local\bin\dsh-ui.cmd`）或从仓库直接跑 `dsh-ui.ps1`。
+
+18. **装好二进制 ≠ agent 会用：skill 得单独同步到技能目录。**
+    DSH 只从技能根发现技能（源码 `packages/skill/skill-filesystem`：用户级
+    `<home>/.dsh/skills`，另有项目级 `<项目>/.dsh/skills`、`<项目>/.agents/skills`），
+    而我一开始只把 skill 写在仓库 `skill-win/` 里 —— 当时 `~/.dsh/skills` 是**空的**。
+    现在 `install.ps1 -WithSkill` 会复制到 `%USERPROFILE%\.dsh\skills\dsh-windows-ui\SKILL.md`
+    （对应 macOS 版 Makefile 的 `SKILL_DEST` + `make sync-skill`），并校验落地文件前 6 行含
+    `name:` —— frontmatter 不合格的技能会被**静默忽略**，不校验的话只会表现为"技能就是不出现"。
+    实测**无需重启**：同步之后本次会话的技能目录立刻列出了 `dsh-windows-ui`，
+    `skill` 工具加载成功并返回基目录 `C:\Users\<you>\.dsh\skills\dsh-windows-ui`
+    （技能目录带 watcher，会失效缓存）。
 
 ## 未验证 / 已知缺口
 

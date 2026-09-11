@@ -1,4 +1,4 @@
-﻿# dsh-ui (Windows) 命令参考
+# dsh-ui (Windows) 命令参考
 
 > 本文是 Windows 版的完整命令手册。上手看 [README](../README.md)；
 > 给 agent 用的操作规范在 [`skill-win/SKILL.md`](../skill-win/SKILL.md)；
@@ -48,6 +48,27 @@ dsh-ui --dry click 100 200
 C:\Users\<你>\.local\bin\dsh-ui.cmd displays                          # 包装脚本，自动挑宿主
 powershell -NoProfile -File C:\Users\<你>\.local\bin\dsh-ui.ps1 displays   # 直接指定 5.1 宿主
 ```
+
+### 给 agent 用：安装全局 skill
+
+二进制装好不等于 agent 会用。DSH 只从**技能目录**里发现技能
+（源码 `packages/skill/skill-filesystem`：用户级根 = `<home>/.dsh/skills`，
+项目级还有 `<项目>/.dsh/skills` 与 `<项目>/.agents/skills`），所以要单独同步：
+
+```powershell
+# 装二进制的同时把 skill 同步到 %USERPROFILE%\.dsh\skills\dsh-windows-ui\SKILL.md
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Prefix "$env:USERPROFILE\.local" -WithSkill
+# 只同步 skill / 换目录
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -WithSkill
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -WithSkill -SkillDest D:\skills\dsh-windows-ui
+```
+
+这与 macOS 版 `Makefile` 的 `SKILL_DEST ?= $(HOME)/.dsh/skills/dsh-macos-ui` + `make sync-skill`
+是同一个约定，只是技能名是 `dsh-windows-ui`。安装脚本会顺带校验落地文件的前 6 行里有
+`name:` 字段——frontmatter 写错的技能会被 DSH **静默忽略**，校验能当场发现。
+
+实测：同步之后**不需要重启宿主**，新技能立刻出现在会话的技能目录里（技能目录有 watcher，
+会失效缓存），`skill` 工具也能正常加载。
 
 **宿主选择**（实测，1920×1080 @125%）：
 
