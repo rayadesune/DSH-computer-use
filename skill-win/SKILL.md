@@ -196,7 +196,7 @@ dsh-ui wait-for --change before.png --min-change 500
 The repo ships `tests/verify-windows.ps1`, which drives a self-built WinForms target
 (`tests/ui-target.ps1`) and asserts against **state written by the target itself** — a click
 counts only if the button's own handler fired, typed text must match byte-for-byte, a drag
-must report the requested displacement. 37 assertions pass on PowerShell 7.6 and Windows
+must report the requested displacement. 41 assertions pass on PowerShell 7.6 and Windows
 PowerShell 5.1, covering: CLI baseline/exit codes/audit, region capture + grid pixels,
 `diff`, all three `wait-for` modes, OCR hit accuracy (button centre vs OCR click: 1 px),
 UIA search by pid and by title, `win move/focus/maximize`, real click, `--dry` with no side

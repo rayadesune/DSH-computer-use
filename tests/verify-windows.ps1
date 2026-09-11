@@ -23,11 +23,25 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } c
 $Root = Split-Path -Parent $PSScriptRoot
 $Tool = Join-Path $Root 'dsh-ui.ps1'
 $TargetScript = Join-Path $PSScriptRoot 'ui-target.ps1'
-$StateFile = Join-Path $env:TEMP 'dsh-ui-verify-state.json'
+# 每次运行用独立的状态文件：万一上一次被中断（Ctrl+C / 上游管道被掐断）留下了孤儿靶子，
+# 两个靶子写同一个文件会互相盖掉，出现"区域对不上 / 找不到标签"这类假失败。
+$StateFile = Join-Path $env:TEMP ("dsh-ui-verify-state-{0}.json" -f $PID)
 $DenyFile = Join-Path $env:LOCALAPPDATA 'dsh-ui\denylist.txt'
 $AuditFile = Join-Path $env:LOCALAPPDATA 'dsh-ui\audit.log'
 $WorkDir = Join-Path $env:TEMP 'dsh-ui-verify'
 if (-not (Test-Path $WorkDir)) { [void](New-Item -ItemType Directory -Force -Path $WorkDir) }
+
+# 清掉上次中断留下的孤儿靶子进程
+function Remove-StaleTargets {
+  try {
+    $procs = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+      Where-Object { $_.CommandLine -like '*ui-target.ps1*' })
+    foreach ($p in $procs) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
+    return $procs.Count
+  } catch { return 0 }
+}
+$staleCount = Remove-StaleTargets
+if ($staleCount -gt 0) { Write-Host "已清理上次残留的测试靶进程: $staleCount 个" -ForegroundColor DarkYellow }
 
 $script:Pass = 0
 $script:Fail = 0
@@ -204,6 +218,42 @@ try {
     Assert $hit '审计日志里没有刚跑过的 find-text'
   }
 
+  T '--dry 矩阵：每条输入类命令都只打印动作、不执行' {
+    $cases = @(
+      @{ a = @('--dry', 'move', '100', '200'); re = '(?m)^dry: would move \(100,200\)$' },
+      @{ a = @('--dry', 'click', '100', '200'); re = '(?m)^dry: would click \(100,200\) hold=30ms$' },
+      @{ a = @('--dry', 'click', '100', '200', '--no-activate'); re = '(?m)^dry: would click \(100,200\) hold=30ms no-activate$' },
+      @{ a = @('--dry', 'tap', '10', '20'); re = '(?m)^dry: would tap \(10,20\) hold=60ms$' },
+      @{ a = @('--dry', 'press', '10', '20'); re = '(?m)^dry: would press \(10,20\) hold=800ms$' },
+      # dclick/rclick 的 dry 行也带 hold=30ms：与 macOS 版一致（那边同样打印解析出的 holdMS，
+      # 即使 dclick 实际忽略该参数）
+      @{ a = @('--dry', 'dclick', '10', '20'); re = '(?m)^dry: would dclick \(10,20\) hold=30ms$' },
+      @{ a = @('--dry', 'rclick', '10', '20'); re = '(?m)^dry: would rclick \(10,20\) hold=30ms$' },
+      @{ a = @('--dry', 'drag', '10', '10', '200', '200', '--ms', '300'); re = '(?m)^dry: would drag \(10,10\) -> \(200,200\) settle=80 hold=80 move=300 steps=12 momentum=0$' },
+      @{ a = @('--dry', 'scroll', '300'); re = '(?m)^dry: would scroll 300$' },
+      @{ a = @('--dry', 'scroll', '-300', '--drag'); re = '(?m)^dry: would scroll -300 \(as drag\)$' },
+      @{ a = @('--dry', 'type', '中文'); re = '(?m)^dry: would type 2 字符$' },
+      @{ a = @('--dry', 'keys', 'Ab-1!'); re = '(?m)^dry: would send 5 个键码字符:$' },
+      @{ a = @('--dry', 'key', 'ctrl+shift+s'); re = '(?m)^dry: would press ctrl\+shift\+s$' },
+      @{ a = @('--dry', 'shot', '-R', '0,0,100,100', '--grid', '--zoom'); re = '(?m)^dry: would shot -R 0,0,100,100 --grid 50 --zoom 2$' },
+      @{ a = @('--dry', 'clipboard', 'set', 'hello'); re = '(?m)^dry: would set clipboard \(5 字符\)$' },
+      @{ a = @('--dry', 'win', 'focus', '1'); re = '(?m)^dry: would focus window \[1\] ' }
+    )
+    foreach ($c in $cases) {
+      $r = Invoke-Tool -Command $c.a -Quiet
+      Assert ($r.Code -eq 0) ("--dry " + ($c.a -join ' ') + " exit=$($r.Code)")
+      Assert-Match $r.Text $c.re ("dry 输出不符: " + ($c.a -join ' '))
+    }
+    # find-text 的 --dry 会照常截图 + OCR，只把「点击」那一步换成打印；
+    # 所以它需要一个真能识别出文字的区域，单独用靶子的标签矩形来测。
+    $hdrDry = Get-CtlRect 'HeaderLabel'
+    $region = "{0},{1},560,60" -f ([int]$hdrDry[0] - 8), ([int]$hdrDry[1] - 8)
+    $r = Invoke-Tool -Command @('--dry', 'find-text', 'TARGET-ALPHA-9931', '--click', '-R', $region) -Quiet
+    Assert ($r.Code -eq 0) "find-text --dry exit=$($r.Code)：$($r.Text)"
+    Assert-Match $r.Text '匹配 1 处' 'find-text --dry 仍应真的跑 OCR'
+    Assert-Match $r.Text '(?m)^dry: would click ' 'find-text --dry 的点击应换成 dry 行'
+  }
+
   # ====================================================== B. 截图/像素 ===
   Group 'B. 截图 / 网格 / 缩放 / diff / wait-for'
 
@@ -266,6 +316,20 @@ try {
     Assert-Match $r.Text '画面已变化并稳定' 'wait-for --change'
   }
 
+  T 'wait-for --text 等到 OCR 出现指定文字' {
+    $hdr = Get-CtlRect 'HeaderLabel'
+    $x = [int]$hdr[0] - 8; $y = [int]$hdr[1] - 8
+    $r = Invoke-Tool -Command @('wait-for', '--text', 'TARGET-ALPHA-9931', '-R', "$x,$y,560,60", '--timeout', '12') -Quiet
+    Assert ($r.Code -eq 0) "exit=$($r.Code)：$($r.Text)"
+    Assert-Match $r.Text 'ok 找到' 'wait-for --text'
+  }
+
+  T 'wait-for --text 等不到时超时 exit=1' {
+    $r = Invoke-Tool -Command @('wait-for', '--text', 'ZZZ-NEVER-APPEARS', '--timeout', '2', '--interval', '0.5') -Quiet
+    Assert ($r.Code -eq 1) "exit=$($r.Code)，期望 1"
+    Assert-Match $r.Text '超时' 'wait-for 超时输出'
+  }
+
   # ================================================= C. OCR / UIA 定位 ===
   Group 'C. 定位：find-text (OCR) / find-ax (UIA) / under'
 
@@ -309,6 +373,40 @@ try {
     $r = Invoke-Tool -Command @('under', "$cx", "$cy") -Quiet
     Assert ($r.Code -eq 0) "exit=$($r.Code)：$($r.Text)"
     Assert-Match $r.Text 'PowerShell' 'under 输出'
+  }
+
+  T '--dry 预演一整套动作后靶子状态零变化' {
+    $before = Get-TargetState
+    $dragR = Get-CtlRect 'DragArea'
+    $scrollR = Get-CtlRect 'ScrollList'
+    # 全部指向真实控件：如果哪条命令真的执行了，下面的状态断言必然失败
+    $cmds = @(
+      @('--dry', 'click', "$([int]$submitAx.center[0])", "$([int]$submitAx.center[1])"),
+      @('--dry', 'tap', "$([int]$submitAx.center[0])", "$([int]$submitAx.center[1])"),
+      @('--dry', 'dclick', "$([int]$submitAx.center[0])", "$([int]$submitAx.center[1])"),
+      @('--dry', 'type', 'SHOULD-NOT-APPEAR'),
+      @('--dry', 'keys', 'XYZ'),
+      @('--dry', 'key', 'ctrl+a'),
+      @('--dry', 'drag', "$([int]$dragR[0] + 40)", "$([int]$dragR[1] + 40)", "$([int]$dragR[0] + 140)", "$([int]$dragR[1] + 160)"),
+      @('--dry', 'move', "$([int]$scrollR[0] + 20)", "$([int]$scrollR[1] + 20)"),
+      @('--dry', 'scroll', '300'),
+      @('--dry', 'clipboard', 'set', 'SHOULD-NOT-SET'),
+      @('--dry', 'win', 'move', '1', '10', '10', '300', '200')
+    )
+    foreach ($c in $cmds) {
+      $r = Invoke-Tool -Command $c -Quiet
+      Assert ($r.Code -eq 0) ("--dry " + ($c -join ' ') + " exit=$($r.Code)")
+    }
+    Start-Sleep -Milliseconds 600
+    $after = Get-TargetState
+    Assert ($after.submit -eq $before.submit) "干跑后按钮计数 $($before.submit) -> $($after.submit)"
+    Assert ($after.clear -eq $before.clear) "干跑后清理计数变化"
+    Assert ($after.text -eq $before.text) "干跑后文本框内容变化：'$($after.text)'"
+    Assert ($after.drag.done -eq $before.drag.done) '干跑后靶子收到了拖拽事件'
+    Assert ([int]$after.scrollY -eq [int]$before.scrollY) "干跑后列表滚动位置变化：$($before.scrollY) -> $($after.scrollY)"
+    Assert (($after.windowRect -join ',') -eq ($before.windowRect -join ',')) "干跑后窗口位置变化：$($before.windowRect -join ',') -> $($after.windowRect -join ',')"
+    $clip = (Invoke-Tool -Command @('clipboard', 'get') -Quiet).Text.Trim()
+    Assert ($clip -ne 'SHOULD-NOT-SET') '干跑改动了剪贴板'
   }
 
   # ======================================================= D. 窗口管理 ===
@@ -634,6 +732,8 @@ catch {
 finally {
   # 还原现场：关掉测试靶、把光标放回去、恢复拦截名单
   if ($target -and -not $target.HasExited) { try { $target.Kill(); Start-Sleep -Milliseconds 300 } catch { } }
+  [void](Remove-StaleTargets)   # 兜底：连中途重新拉起的靶子一起收掉
+  if (Test-Path -LiteralPath $StateFile) { Remove-Item -LiteralPath $StateFile -Force -ErrorAction SilentlyContinue }
   if ($null -ne $denyBackup) { try { [System.IO.File]::WriteAllText($DenyFile, $denyBackup, (New-Object System.Text.UTF8Encoding $false)) } catch { } }
   if ($prevCursor -and $prevCursor -match 'cursor=\((-?\d+),(-?\d+)\)') {
     try { [void](Invoke-Tool -Command @('move', $Matches[1], $Matches[2]) -Quiet) } catch { }

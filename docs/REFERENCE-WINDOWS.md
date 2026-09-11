@@ -260,7 +260,7 @@ dsh-ui diff before.png after.png
 
 ## 已验证场景（本机实测）
 
-完整记录见 [`VERIFICATION-WINDOWS.md`](VERIFICATION-WINDOWS.md)：37 项断言全绿，覆盖
+完整记录见 [`VERIFICATION-WINDOWS.md`](VERIFICATION-WINDOWS.md)：41 项断言全绿，覆盖
 CLI 基线/退出码/审计、区域截图与网格像素、diff、wait-for 三种模式、OCR 与 UIA 定位精度、
 窗口 move/focus/maximize、真实点击（OCR 命中坐标与按钮中心误差 1px）、中文与 ASCII 输入、
 真实键码、`ctrl+a`/`delete`、剪贴板粘贴、拖拽落点、滚轮滚动、拦截名单 exit 3、batch 逐条审计，
