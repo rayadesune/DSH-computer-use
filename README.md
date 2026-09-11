@@ -166,15 +166,21 @@ dsh-ui --dry click 100 200            # 只打印、不执行
 `C:\Users\<你>\.local\bin\dsh-ui.cmd displays` 或从仓库直接跑 `dsh-ui.ps1`。
 卸载：`.\install.ps1 -Prefix "$env:USERPROFILE\.local" -Uninstall`。
 
-**agent 的 skill 是另一件事**：DSH 只从技能目录读全局技能，所以 skill 得单独同步
+**agent 的 skill 是另一件事**：DSH 只从技能目录读全局技能，所以 skill 得单独装
 （`-WithSkill`，对应 macOS 版的 `make sync-skill`）。它落到
-`%USERPROFILE%\.dsh\skills\dsh-windows-ui\SKILL.md`，与 mac 版 `~/.dsh/skills/dsh-macos-ui/`
+`%USERPROFILE%\.dsh\skills\dsh-windows-ui`，与 mac 版 `~/.dsh/skills/dsh-macos-ui/`
 同一个约定（DSH 源码 `packages/skill/skill-filesystem` 里的 `user-dsh` 根）：
 
 ```powershell
-.\install.ps1 -WithSkill                                        # 默认 ~/.dsh/skills/dsh-windows-ui
+.\install.ps1 -WithSkill                                        # 默认装到 ~/.dsh/skills/dsh-windows-ui
 .\install.ps1 -WithSkill -SkillDest D:\skills\dsh-windows-ui    # 换目录
+.\install.ps1 -WithSkill -SkillCopy                             # 强制复制模式（默认是联接）
 ```
+
+默认用**目录联接（junction）**把技能目录指向仓库的 `skill-win/`，所以**改完即生效、不需要任何同步动作**
+（这是免管理员的目录级链接；编辑器"写临时文件再改名"也不会把它弄断）。跨盘/非 NTFS 时自动退回复制模式，
+那时改完要重跑一次 `-WithSkill`。卸载用 `-Uninstall -WithSkill`：**只摘链接，绝不动仓库目录**。
+套件里带一条漂移检测：本机安装的 skill 与仓库副本不一致时直接报错。
 
 | 内容 | 位置 |
 | --- | --- |
@@ -194,7 +200,7 @@ dsh-ui --dry click 100 200            # 只打印、不执行
 - **定位**：`find-ax`（UIA，可 `--pid`/`--app`，支持按窗口标题匹配）优先，`find-text`（OCR）兜底；
   Windows OCR **不提供置信度**，且**中文识别明显弱于 macOS Vision**，手册里给了实测例子。
 - **验证**：`tests/verify-windows.ps1` 会拉起一个自建 WinForms 测试靶，按靶子自己写出的状态断言
-  「点击真的落在按钮上、输入的字一模一样、拖拽位移符合请求」，本机 42 项全绿。
+  「点击真的落在按钮上、输入的字一模一样、拖拽位移符合请求」，本机 44 项全绿。
 - ⚠ **未实测**：多显示器、提权窗口（UIPI）、锁屏状态——本机没有对应环境，手册里已标注。
 
 ## 项目结构
@@ -213,7 +219,7 @@ docs/VERIFICATION-WINDOWS.md  # Windows 版本机实测记录
 skill/SKILL.md            # 给 agent 的操作规范（macOS）
 skill-win/SKILL.md        # 给 agent 的操作规范（Windows）
 tests/ui-target.ps1       # 受控 WinForms 测试靶
-tests/verify-windows.ps1  # Windows 自动化验证套件（42 项断言）
+tests/verify-windows.ps1  # Windows 自动化验证套件（44 项断言）
 .github/workflows/ci.yml  # 构建 + 冒烟测试 + 文档一致性检查
 ```
 

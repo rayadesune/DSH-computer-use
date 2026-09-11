@@ -43,6 +43,23 @@ function Remove-StaleTargets {
 $staleCount = Remove-StaleTargets
 if ($staleCount -gt 0) { Write-Host "已清理上次残留的测试靶进程: $staleCount 个" -ForegroundColor DarkYellow }
 
+function Test-ReparsePoint([string]$Path) {
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+  if ($null -eq $item) { return $false }
+  return [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+}
+
+# 删除目录树前先摘掉里面的联接/符号链接：Remove-Item -Recurse 遇到目录联接有可能
+# 顺着链接递归进**目标**（对技能联接来说目标就是本仓库），那是能把仓库删掉的。
+function Remove-TreeSafe([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) { return }
+  $links = @(Get-ChildItem -LiteralPath $Path -Recurse -Force -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $_.Attributes -band [System.IO.FileAttributes]::ReparsePoint })
+  foreach ($l in $links) { try { [System.IO.Directory]::Delete($l.FullName, $false) } catch { } }
+  if (Test-ReparsePoint $Path) { [System.IO.Directory]::Delete($Path, $false); return }
+  Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 $script:Pass = 0
 $script:Fail = 0
 $script:Skip = 0
@@ -102,9 +119,23 @@ function Invoke-Tool {
 }
 
 function Get-TargetState {
-  if (-not (Test-Path -LiteralPath $StateFile)) { throw "状态文件不存在: $StateFile" }
-  $raw = [System.IO.File]::ReadAllText($StateFile, [System.Text.Encoding]::UTF8)
-  return ($raw | ConvertFrom-Json)
+  # 最多重试 3 秒：靶子每 150ms 覆盖一次状态文件，万一赶上写窗口（或启动慢）就退避重试，
+  # 不要把一个瞬时竞态报成"测试失败"。
+  $deadline = (Get-Date).AddSeconds(3)
+  $lastErr = $null
+  while ($true) {
+    try {
+      if (Test-Path -LiteralPath $StateFile) {
+        $raw = [System.IO.File]::ReadAllText($StateFile, [System.Text.Encoding]::UTF8)
+        if ($raw) { return ($raw | ConvertFrom-Json) }
+        $lastErr = '状态文件为空（正在写入）'
+      } else {
+        $lastErr = "状态文件不存在: $StateFile"
+      }
+    } catch { $lastErr = $_.Exception.Message }
+    if ((Get-Date) -ge $deadline) { throw $lastErr }
+    Start-Sleep -Milliseconds 150
+  }
 }
 
 # 测试靶自己报出来的控件矩形（物理像素）。Panel/GroupBox/ListBox 对 UIA 不可见，
@@ -117,9 +148,23 @@ function Get-CtlRect {
   return @([int]$c[0], [int]$c[1], [int]$c[2], [int]$c[3])
 }
 
+# OCR 与 under 要求目标窗口**真的可见**：跑这些测试前先把靶子提到前台。
+# 不做这一步，套件会因为"刚好有别的窗口盖住靶子"而随机失败（本机实测踩到过：
+# 截图里出现的是 DSH 自己的对话，OCR 自然找不到靶子上的标签）。
+function Focus-Target {
+  $r = Invoke-Tool -Command @('win', 'list', '--json') -Quiet
+  if ($r.Code -ne 0) { return }
+  $o = $r.Text | ConvertFrom-Json
+  $idx = 0; $want = 0
+  foreach ($w in $o.windows) { $idx++; if ($w.pid -eq $tpid -and $w.title -eq 'DSH UI Target') { $want = $idx } }
+  if ($want -gt 0) {
+    [void](Invoke-Tool -Command @('win', 'focus', "$want") -Quiet)
+    Start-Sleep -Milliseconds 350
+  }
+}
+
 # 从 find-ax --json 里取出某个控件
-function Get-AxControl {
-  param([string]$Name, [int]$TargetPid)
+function Get-AxControl {  param([string]$Name, [int]$TargetPid)
   $r = Invoke-Tool -Command @('find-ax', $Name, '--pid', "$TargetPid", '--json', '--max', '40') -Quiet
   if ($r.Code -ne 0) { throw ("find-ax '$Name' 退出 $($r.Code)：$($r.Text)") }
   $obj = $r.Text | ConvertFrom-Json
@@ -317,6 +362,7 @@ try {
   }
 
   T 'wait-for --text 等到 OCR 出现指定文字' {
+    Focus-Target
     $hdr = Get-CtlRect 'HeaderLabel'
     $x = [int]$hdr[0] - 8; $y = [int]$hdr[1] - 8
     $r = Invoke-Tool -Command @('wait-for', '--text', 'TARGET-ALPHA-9931', '-R', "$x,$y,560,60", '--timeout', '12') -Quiet
@@ -356,6 +402,7 @@ try {
   }
 
   T 'find-text 命中的坐标落在靶控件内（OCR 定位精度）' {
+    Focus-Target
     $hdr = Get-CtlRect 'HeaderLabel'
     $x0 = [int]$hdr[0] - 8; $y0 = [int]$hdr[1] - 8
     $r = Invoke-Tool -Command @('find-text', 'TARGET-ALPHA-9931', '-R', "$x0,$y0,560,60", '--json') -Quiet
@@ -369,6 +416,7 @@ try {
   }
 
   T 'under 报告落点所属应用' {
+    Focus-Target
     $cx = [int]$submitAx.center[0]; $cy = [int]$submitAx.center[1]
     $r = Invoke-Tool -Command @('under', "$cx", "$cy") -Quiet
     Assert ($r.Code -eq 0) "exit=$($r.Code)：$($r.Text)"
@@ -595,6 +643,7 @@ try {
     }
 
     T 'find-text --click 点到 OCR 命中的按钮上' {
+      Focus-Target
       # 用 OCR 找窗口左上区域的 Submit 按钮并点掉，然后断言 Submit 计数增加。
       # （实测 Windows OCR 会把 12px 的 "Clear" 读成 "CI ear"，所以这里挑识别更稳的 "Submit"。）
       $wx = [int]$inputAx.pos[0] - 20; $wy = [int]$inputAx.pos[1] - 20
@@ -739,17 +788,61 @@ try {
       Assert (Test-Path -LiteralPath (Join-Path $testPrefix 'tests\verify-windows.ps1')) '-WithDocs 应把验证套件一并装过去'
       Assert (Test-Path -LiteralPath (Join-Path $testPrefix 'docs\REFERENCE-WINDOWS.md')) '-WithDocs 应把手册一并装过去'
 
-      # 全局 skill：DSH 从 <home>/.dsh/skills/<name>/SKILL.md 读用户级技能，所以它得单独同步
+      # 全局 skill 的复制模式：DSH 只从技能根读技能，所以内容必须落到位
       $skillDest = Join-Path $testPrefix 'skill-dest\dsh-windows-ui'
-      & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'install.ps1') -Prefix $testPrefix -NoPath -WithSkill -SkillDest $skillDest 2>&1 | Out-Null
+      & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'install.ps1') -Prefix $testPrefix -NoPath -WithSkill -SkillCopy -SkillDest $skillDest 2>&1 | Out-Null
       $skillFile = Join-Path $skillDest 'SKILL.md'
       Assert (Test-Path -LiteralPath $skillFile) '-WithSkill 应把 SKILL.md 同步到 -SkillDest'
+      Assert (-not (Test-ReparsePoint $skillDest)) '-SkillCopy 必须是真目录，不能是联接'
       $head = [System.IO.File]::ReadAllLines($skillFile, [System.Text.Encoding]::UTF8)
       $nameLine = @($head | Select-Object -First 6 | Where-Object { $_ -match '^name:\s*dsh-windows-ui\s*$' })
       Assert ($nameLine.Count -eq 1) 'SKILL.md 的 frontmatter 里应有 name: dsh-windows-ui（DSH 靠它注册技能）'
       Assert ((Get-FileHash $skillFile).Hash -eq (Get-FileHash (Join-Path $Root 'skill-win\SKILL.md')).Hash) '同步过去的 SKILL.md 应与仓库副本逐字节一致'
     } finally {
+      Remove-TreeSafe $testPrefix
       & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'install.ps1') -Prefix $testPrefix -Uninstall 2>&1 | Out-Null
+    }
+  }
+
+  T 'skill 用目录联接安装：改仓库的 SKILL.md 立刻生效（无需再同步）' {
+    # 用临时目录做源和目标，避免动到本机真实安装的技能目录
+    $jSrc = Join-Path $env:TEMP 'dsh-ui-skill-src'
+    $jLink = Join-Path $env:TEMP 'dsh-ui-skill-link'
+    Remove-TreeSafe $jLink
+    Remove-TreeSafe $jSrc
+    $null = New-Item -ItemType Directory -Force -Path $jSrc
+    Copy-Item -LiteralPath (Join-Path $Root 'skill-win\SKILL.md') -Destination (Join-Path $jSrc 'SKILL.md')
+    try {
+      & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'install.ps1') -Prefix $testPrefix -NoPath -WithSkill -SkillSource $jSrc -SkillDest $jLink 2>&1 | Out-Null
+      Assert ($LASTEXITCODE -eq 0) "install exit=$LASTEXITCODE"
+      Assert (Test-ReparsePoint $jLink) '默认应为目录联接（-SkillCopy 才会复制）'
+      Assert (Test-Path -LiteralPath (Join-Path $jLink 'SKILL.md')) '经联接应能看到 SKILL.md'
+
+      # 关键断言：改**源**之后，不经任何同步命令，从链接处就能读到新内容
+      $marker = "# 自动同步探针 " + [guid]::NewGuid().ToString('N')
+      [System.IO.File]::AppendAllText((Join-Path $jSrc 'SKILL.md'), "`r`n$marker`r`n", (New-Object System.Text.UTF8Encoding $false))
+      $seen = [System.IO.File]::ReadAllText((Join-Path $jLink 'SKILL.md'), [System.Text.Encoding]::UTF8)
+      Assert ($seen.Contains($marker)) '改了源文件后，全局路径没有立刻看到新内容 —— 联接没生效'
+
+      # 清理时必须只摘链接：源目录（相当于本仓库）必须原封不动
+      & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'install.ps1') -Prefix $testPrefix -WithSkill -SkillSource $jSrc -SkillDest $jLink -Uninstall 2>&1 | Out-Null
+      Assert (-not (Test-Path -LiteralPath $jLink)) '-Uninstall -WithSkill 应摘掉联接'
+      Assert (Test-Path -LiteralPath (Join-Path $jSrc 'SKILL.md')) '卸载绝不能删掉联接目标（那就是把仓库删了）'
+      Assert ([System.IO.File]::ReadAllText((Join-Path $jSrc 'SKILL.md'), [System.Text.Encoding]::UTF8).Contains($marker)) '源文件内容应完好'
+    } finally {
+      Remove-TreeSafe $jLink
+      Remove-TreeSafe $jSrc
+    }
+  }
+
+  $realSkill = Join-Path $env:USERPROFILE '.dsh\skills\dsh-windows-ui\SKILL.md'
+  if (-not (Test-Path -LiteralPath $realSkill)) {
+    Skip '本机已安装的全局 skill 与仓库副本一致（漂移检测）' '本机未安装（install.ps1 -WithSkill）'
+  } else {
+    T '本机已安装的全局 skill 与仓库副本一致（漂移检测）' {
+      $a = (Get-FileHash $realSkill).Hash
+      $b = (Get-FileHash (Join-Path $Root 'skill-win\SKILL.md')).Hash
+      Assert ($a -eq $b) "全局 skill 与仓库副本不一致（仓库改了但没同步）。修复：install.ps1 -WithSkill（复制模式），或改用联接安装后即自动一致"
     }
   }
 }
