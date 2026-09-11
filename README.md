@@ -85,14 +85,15 @@ dsh-ui --dry click 100 200
 | 分类 | 命令 |
 | --- | --- |
 | 鼠标 | `move` `click` `tap` `press` `dclick` `rclick` `drag` `scroll` |
-| 键盘 | `type`（Unicode/中文，绕过输入法） `keys`（真实键码） `key`（含修饰键） |
+| 键盘 | `type`（Unicode/中文，绕过输入法） `keys`（真实键码） `key`（含修饰键与方向键 `key down`） |
 | 截图 | `shot`（`-D/-R/-C/-c/-o/--grid/--zoom`） `displays` |
 | 定位 | `find-text`（OCR，`--all/--fast/--click/--list/--json`） `find-ax`（无障碍树，`--app/--pid/--all`） `under` |
 | 窗口 | `win list \| focus \| maximize \| fullscreen \| move`（Windows 另有 `close/minimize/restore`） |
+| 菜单 | `menu --list X Y` / `menu X Y "项1/项2"` / `menu --close`（Windows：右键后用方向键导航，不点菜单项） |
 | 验证 | `wait-for --text/--stable/--change` `diff` |
 | 其他 | `clipboard` `batch` `guard` `pos` `--dry` |
 
-退出码：`0` 成功 / `1` 未命中或超时 / `2` 用法错误 / `3` 被拦截名单拒绝。
+退出码：`0` 成功 / `1` 未命中、超时，或**目标窗口不在前台因此拒绝发送点击** / `2` 用法错误 / `3` 被拦截名单拒绝。
 
 完整手册：[docs/REFERENCE.md](docs/REFERENCE.md)（macOS）、
 [docs/REFERENCE-WINDOWS.md](docs/REFERENCE-WINDOWS.md)（Windows，含实测数据与与 macOS 的差异）。
