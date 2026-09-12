@@ -92,6 +92,7 @@ dsh-ui find-ax   "文字" [--app 名称] [--pid N] [--all] [--json] [--max N] [-
 dsh-ui win list [--json] | focus N | maximize N | fullscreen N | move N X Y [W H]
                          | close N | minimize N | restore N
 dsh-ui under X Y
+dsh-ui foreground [--json]      # who owns the foreground — run this when a click is refused
 
 # Popup menus — navigate with the keyboard, never click a menu item
 dsh-ui menu --list X Y          # rclick, then list the items it can see: [n] "text" -> gx gy
@@ -178,6 +179,19 @@ skipped, which is exactly why a pure "count the OCR lines" index drifts), `key r
 submenu, `key enter` commits, `key esc` closes. Submenus close as soon as the mouse leaves them,
 so a "hover → screenshot → click the item" sequence usually loses the menu between the two steps.
 
+**A menu is not a palette — know when to stop.** Two different things live behind the same kind
+of click:
+
+| | Context menu (Win32 `#32768`) | Icon palette (LabVIEW Functions palette, tool palettes) |
+|---|---|---|
+| Navigation | keyboard works: `down`/`right`/`enter` | mouse only; keyboard does nothing |
+| Sub-items | hover opens the submenu | hover *sometimes* expands; **clicking a category closes the whole palette** |
+| OCR | rows of text, one item per row | a grid of icons; OCR returns labels scattered around |
+| Verdict | automate it (`dsh-ui menu`) | **stop automating** — 3+ nesting levels, every miss costs a full re-navigation |
+
+When `menu --list` returns a handful of unrelated fragments instead of item rows, you are looking
+at a palette, not a menu. Say so and hand that step to the human instead of burning calls.
+
 ## Focus, and why clicks disappear
 
 Clicks are delivered to whatever window is foreground, not to the window under the cursor. On a
@@ -190,10 +204,51 @@ therefore be swallowed while the command still reports success. The tool now gua
   (`--anyway` forces it; `--no-activate` only checks);
 * watch the exit code, and re-issue after `win focus N` when you get a `1`.
 
+**When the guard refuses, do not reach for `--anyway`.** Ask who owns the foreground instead:
+
+```powershell
+$ dsh-ui foreground
+前台窗口: Microsoft Edge — "交接文档… "  pid=28356  class=Chrome_WidgetWin_1  pos=(-9,-9)  size=1938x1038
+```
+
+`--anyway` sends the click to *that* window (usually harmless, never what you wanted). In a long
+LabVIEW session this exact pattern cost ~30 calls: the guard kept refusing, `win focus` kept
+"failing", and `foreground` would have answered it in one line — **the DSH chat page itself owned
+the foreground**, so every click was aimed at the browser. Two consequences worth internalising:
+
+* **Your own console/browser is a first-class thief.** Each shell command can hand focus to its
+  host window; never assume the app you just focused still has it.
+* **A modal dialog makes everything else unclickable.** `win list` first; if a dialog is up
+  (``连接超时``, ``认证``, save prompts…), dismiss *it* and then act. Click coordinates inside the
+  app are irrelevant while it is up.
+* Modal dialogs **move** (a LabVIEW "认证" box shifted 14 px between two calls). Re-locate buttons
+  by OCR text each time (`find-text "取消" --list`) instead of reusing coordinates.
+
 Two related traps: a modal dialog blocks the app underneath, so list windows and dismiss dialogs
 before blaming the click; and a mis-aimed click on empty canvas can pop a **palette** (a floating
 window, not a menu) — if the follow-up menu looks wrong, re-locate the target instead of
 retrying the click.
+
+## Identifying what an object *is* (before you try to change it)
+
+Custom-drawn apps (LabVIEW, CAD, games, CEF canvases) give the tree nothing useful, so identify
+by behaviour, cheapest first:
+
+1. **Hover ~1 s and read the tip strip.** LabVIEW names the object under the cursor
+   (`按名称解除捆绑`, `数组至簇转换`…). This single trick untangled a bug that had resisted
+   a dozen coordinate-guessed attempts — two visually identical yellow boxes turned out to be
+   *different classes*, so every "obvious" fix was aimed at the wrong one.
+2. **Right-click and read the menu; the menu is the class oracle.** `取消组合` ⇒ it is a group,
+   `打开自定义类型` / `重设自定义类型检查并更新` ⇒ a type-definition instance (its contents are
+   **locked** — edit the `.ctl`, not the instance), `簇大小…` ⇒ a cluster constant, `数值选板 /
+   数组选板` ⇒ a numeric/array node, `选择项` ⇒ a variable node or cluster-element terminal.
+3. **Try to select the inner object.** If clicking always selects one big frame, the thing is a
+   container (group / cluster / typedef / subpanel) — treat it as one object, or open its source
+   (for a typedef: right-click → open custom type) rather than fighting the selection.
+
+Also: **capture small regions at high zoom**. `shot -R x,y,w,h --zoom 3` comes back roughly 1:1,
+so an attachment's pixel coordinates *are* global coordinates; a full-screen shot arrives
+downscaled (measured 1920×1080 → 1066×600 ≈ 0.55×) and eyeballing it is off by ~1.8×.
 
 ## Which channel to use
 
@@ -264,12 +319,21 @@ fewer than a third advanced the task):
 | Menus, especially nested ones | ⚠️ use `menu`; hand-rolled hover+click loses the menu |
 | Small icon-only targets found by OCR | ⚠️ needs full-resolution crops + `under` to corroborate |
 | Diagram/graphics editing (drag to wire, resize handles, canvas tools) | ❌ prefer a file/CLI/API path, or hand it to the human |
+| Icon palettes / deeply nested tool palettes | ❌ mouse-only, self-closing — hand it to the human |
 
 Before automating a GUI step, ask whether the same fact is available offline. Decompressing a
 file, diffing two versions, or counting strings took seconds and settled a question that had cost
 many GUI round-trips; the GUI was only needed to *confirm* it. When a GUI action is unavoidable
 but fiddly, do **one** verified step at a time and keep a screenshot trail — and never leave a
 half-finished edit unsaved in an app you cannot fully control.
+
+**Mind the app's own state model.** Editing source does not change a *running* program: LabVIEW
+keeps executing the loaded copy, so diagram/front-panel edits only take effect after
+stop → (save) → run again. Ask "is this app running / does it cache what I just changed?" before
+concluding a change failed. Likewise, a saved file's size/ timestamp is the cheapest proof that
+an edit was committed (`Get-Item`), and comparing **three copies** (original / test copy /
+modified) at the *string* level is usually enough to answer "did we break it, or was it always
+like that?" — do that *before* spending GUI calls chasing a suspected regression.
 
 ## Known limitations
 

@@ -1303,6 +1303,21 @@ function Assert-PointAllowed {
 
 # 点击前把落点所属窗口提到前台：Windows 下点击本来也会激活，但焦点切换是异步的，
 # 紧接着投递的按键/拖拽可能落到旧的前台窗口上 —— 与 macOS 版的动机一致。
+function Get-ForegroundInfo {
+  # 当前前台窗口的信息（谁在挡着）。抢焦点失败时用它回答"到底是谁在前台"。
+  $h = [DshWin]::GetForegroundWindow()
+  if ($h -eq [IntPtr]::Zero) { return $null }
+  try { return (Get-WindowOwner -Hwnd $h) } catch { return $null }
+}
+
+function Format-ForegroundOwner {
+  $fg = Get-ForegroundInfo
+  if ($null -eq $fg) { return '未知窗口' }
+  $t = [string]$fg.Title
+  if ($t.Length -gt 40) { $t = $t.Substring(0, 40) + '…' }
+  return ("「{0}」`"{1}`" (pid={2}, class={3})" -f $fg.App, $t, $fg.Pid, $fg.Class)
+}
+
 function Ensure-FrontmostForClick {
   # 返回 $true = 目标窗口已在前台、可以点；$false = 不是前台，这一击会被别的窗口吃掉。
   # 旧版本只警告一次就照样点，实测在会被抢焦点的应用（LabVIEW / 浏览器 / 带模态框的程序）上
@@ -1313,7 +1328,7 @@ function Ensure-FrontmostForClick {
   if ([DshWin]::GetForegroundWindow() -eq $owner.Hwnd) { return $true }
   $name = $owner.App
   if ($NoActivate) {
-    Set-Note ("目标 App「$name」不是前台窗口，且指定了 --no-activate（不激活）")
+    Set-Note ("目标 App「$name」不是前台窗口，且指定了 --no-activate（不激活）；当前前台是 " + (Format-ForegroundOwner))
     return $false
   }
   for ($attempt = 1; $attempt -le [Math]::Max(1, $Retries); $attempt++) {
@@ -1331,7 +1346,9 @@ function Ensure-FrontmostForClick {
     }
     Start-Sleep -Milliseconds 120
   }
-  $t = "目标 App「$name」未能成为前台（已重试 $Retries 次）—— 此时点击会落到别的窗口上。可加 --anyway 强制点击，或先把该窗口切到前台。"
+  $t = ("目标 App「{0}」未能成为前台（已重试 {1} 次）。当前前台是 {2}。" -f $name, $Retries, (Format-ForegroundOwner) +
+        "最常见的原因是**有模态对话框占着前台**（或别的程序刚抢了焦点）：先用 win list 找出来关掉它。" +
+        "注意 --anyway 只会把这一击送到那个前台窗口上，通常仍然点不到目标 —— 先解决前台归属，别硬点。")
   Set-Note $t
   return $false
 }
@@ -1356,6 +1373,26 @@ function Get-CursorLine {
   Start-Sleep -Milliseconds 25
   $c = Get-CursorPoint
   return ("ok cursor=({0},{1}) top-left-coords" -f $c[0], $c[1])
+}
+
+function Invoke-ForegroundCommand {
+  # 前台归属查询：点击被前台守卫拒绝时，先跑这个（而不是盲目 --anyway）。
+  param([string[]]$Rest)
+  $json = $false
+  foreach ($a in $Rest) { if ($a -ceq '--json') { $json = $true } }
+  $fg = Get-ForegroundInfo
+  if ($null -eq $fg) { Write-ErrLine '拿不到前台窗口'; return 1 }
+  if ($json) {
+    Write-Out (ConvertTo-Json -InputObject ([ordered]@{
+      hwnd = [int64]$fg.Hwnd; pid = $fg.Pid; app = $fg.App; process = $fg.Process
+      title = $fg.Title; class = $fg.Class
+      pos = @([int]$fg.Rect[0], [int]$fg.Rect[1]); size = @([int]$fg.Rect[2], [int]$fg.Rect[3])
+    }) -Depth 4 -Compress)
+    return 0
+  }
+  Write-Out ("前台窗口: {0} — `"{1}`"  pid={2}  class={3}  pos=({4},{5})  size={6}x{7}" -f `
+    $fg.App, $fg.Title, $fg.Pid, $fg.Class, $fg.Rect[0], $fg.Rect[1], $fg.Rect[2], $fg.Rect[3])
+  return 0
 }
 
 function Invoke-PosCommand {
@@ -1817,7 +1854,7 @@ function Invoke-WinCommand {
       }
       $front = ([DshWin]::GetForegroundWindow() -eq $w.Hwnd)
       $line = "ok focused [$idx] $($w.App)"
-      if (-not $front) { $line += '（警告：未能确认成为前台窗口 — 下一击可能只用于激活窗口，必要时点两次）' }
+      if (-not $front) { $line += '（警告：未能确认成为前台窗口 — 当前前台是 ' + (Format-ForegroundOwner) + '；下一击可能只用于激活窗口，必要时点两次）' }
       Write-Out $line
       return 0
     }
@@ -2853,6 +2890,7 @@ dsh-ui (Windows) — 给 agent 用的桌面操作原语（macOS 版 dsh-ui.swift
   batch  [-c]                         从 stdin 读脚本逐条执行（# 开头是注释）
   guard                               查看拦截名单、审计日志、干跑状态
   under  X Y                          该坐标下是哪个窗口/元素
+  foreground [--json]                 当前前台窗口是谁（点击被前台守卫拒绝时先跑这个）
   --dry  <任意命令>                   干跑：只打印动作，不执行
 
 退出码: 0 成功 / 1 未命中或超时 / 2 用法错误 / 3 被拦截名单拒绝
@@ -2900,6 +2938,7 @@ function Invoke-Dispatch {
     'batch' { return (Invoke-BatchCommand -Rest $rest) }
     'guard' { return (Invoke-GuardCommand) }
     'under' { return (Invoke-UnderCommand -Rest $rest) }
+    'foreground' { return (Invoke-ForegroundCommand -Rest $rest) }
     'menu' { return (Invoke-MenuCommand -Rest $rest) }
     default {
       Write-ErrLine ("未知命令: " + $Tokens[0])
