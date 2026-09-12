@@ -87,7 +87,7 @@ dsh-ui --dry click 100 200
 | 鼠标 | `move` `click` `tap` `press` `dclick` `rclick` `drag` `scroll` |
 | 键盘 | `type`（Unicode/中文，绕过输入法） `keys`（真实键码） `key`（含修饰键与方向键 `key down`） |
 | 截图 | `shot`（`-D/-R/-C/-c/-o/--grid/--zoom`） `displays` |
-| 定位 | `find-text`（OCR，`--all/--fast/--click/--list/--json`） `find-ax`（无障碍树，`--app/--pid/--all`） `under` |
+| 定位 | `find-text`（OCR，`--all/--fast/--click/--list/--json`） `find-ax`（无障碍树，`--app/--pid/--all`） `under` `foreground`（当前谁占着前台） |
 | 窗口 | `win list \| focus \| maximize \| fullscreen \| move`（Windows 另有 `close/minimize/restore`） |
 | 菜单 | `menu --list X Y` / `menu X Y "项1/项2"` / `menu --close`（Windows：右键后用方向键导航，不点菜单项） |
 | 验证 | `wait-for --text/--stable/--change` `diff` |
